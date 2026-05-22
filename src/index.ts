@@ -1676,6 +1676,55 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       // state === "allow" → fall through to normal permission check
     }
 
+    // Hardcoded: .env files always require approval regardless of tool-level config.
+    if (PATH_BEARING_TOOLS.has(toolName)) {
+      const filePath = getPathBearingToolPath(toolName, input);
+      if (filePath && /\.env$/.test(filePath)) {
+        const envCheck = { toolName, state: "ask" as const, source: "tool" as const, matchedPattern: "*.env (hardcoded)" };
+        const envLogContext = getPermissionLogContext(envCheck, input);
+        const envMessage = `Reading '.env' file '${filePath}' requires approval.`;
+
+        if (!canRequestPermissionConfirmation(ctx)) {
+          writeReviewLog("permission_request.blocked", {
+            source: "tool_call",
+            toolCallId: event.toolCallId,
+            toolName,
+            agentName,
+            ...envLogContext,
+            resolution: "confirmation_unavailable",
+          });
+          return { block: true, reason: envMessage };
+        }
+
+        const envDecision = await promptPermission(ctx, {
+          requestId: event.toolCallId,
+          source: "tool_call",
+          agentName,
+          message: envMessage,
+          toolCallId: event.toolCallId,
+          toolName,
+          path: filePath,
+        });
+
+        if (!envDecision.approved) {
+          writeReviewLog("permission_request.resolved", {
+            source: "tool_call",
+            toolCallId: event.toolCallId,
+            toolName,
+            agentName,
+            ...envLogContext,
+            resolution: "user_denied",
+          });
+          return {
+            block: true,
+            reason: formatUserDeniedReason(envCheck, envDecision.denialReason),
+          };
+        }
+
+        return { action: "continue" };
+      }
+    }
+
     const check = permissionManager.checkPermission(toolName, input, agentName ?? undefined);
     const permissionLogContext = getPermissionLogContext(check, input);
 

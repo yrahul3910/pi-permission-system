@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 
 import { extractFrontmatter, getNonEmptyString, isPermissionState, parseSimpleYamlMap, toRecord } from "./common.js";
 import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.js";
+import { containsShellOperator, splitShellSubcommands } from "./shell-split.js";
 import type {
   AgentPermissions,
   BashPermissions,
@@ -395,6 +396,16 @@ function findLatestTrustedPermissionMatch(
   }
 
   return null;
+}
+
+const PERMISSION_RESTRICTION_ORDER: Record<PermissionState, number> = {
+  allow: 0,
+  ask: 1,
+  deny: 2,
+};
+
+function permissionStateIsMoreRestrictive(candidate: PermissionState, baseline: PermissionState): boolean {
+  return PERMISSION_RESTRICTION_ORDER[candidate] > PERMISSION_RESTRICTION_ORDER[baseline];
 }
 
 function findCompiledPermissionMatch(
@@ -828,16 +839,65 @@ export class PermissionManager {
     if (normalizedToolName === "bash") {
       const record = toRecord(input);
       const command = typeof record.command === "string" ? record.command : "";
-      const result = findCompiledPermissionMatch(compiledBash, command);
+
+      // Split on shell operators (|, &&, ||, ;) respecting quoting/subshells.
+      const subcommands = splitShellSubcommands(command);
+
+      if (subcommands.length <= 1) {
+        // Single command (no operators) — match the full string as before.
+        const result = findCompiledPermissionMatch(compiledBash, command);
+        return {
+          toolName,
+          state: result?.state
+            ?? toolMatch?.state
+            ?? resolveLayeredDefaultPermission(layers, "bash")?.state
+            ?? DEFAULT_POLICY.bash,
+          command,
+          matchedPattern: result?.matchedPattern,
+          source: "bash",
+        };
+      }
+
+      // Compound command. First, try matching the full command against patterns
+      // that explicitly contain shell operators (intentional compound patterns).
+      const fullMatch = findCompiledPermissionMatch(compiledBash, command);
+      if (fullMatch && containsShellOperator(fullMatch.matchedPattern)) {
+        return {
+          toolName,
+          state: fullMatch.state,
+          command,
+          matchedPattern: fullMatch.matchedPattern,
+          source: "bash",
+        };
+      }
+
+      // Check each subcommand individually. If ALL match a pattern, return the
+      // most restrictive state. Otherwise fall through to tool-level / default.
+      const subResults = subcommands.map((sub) => findCompiledPermissionMatch(compiledBash, sub));
+      const allMatched = subResults.every((r) => r !== null);
+
+      if (allMatched) {
+        const mostRestrictive = subResults.reduce((worst, r) => {
+          if (!worst || !r) return worst;
+          return permissionStateIsMoreRestrictive(r.state, worst.state) ? r : worst;
+        });
+
+        return {
+          toolName,
+          state: mostRestrictive!.state,
+          command,
+          matchedPattern: mostRestrictive!.matchedPattern,
+          source: "bash",
+        };
+      }
 
       return {
         toolName,
-        state: result?.state
-          ?? toolMatch?.state
+        state: toolMatch?.state
           ?? resolveLayeredDefaultPermission(layers, "bash")?.state
           ?? DEFAULT_POLICY.bash,
         command,
-        matchedPattern: result?.matchedPattern,
+        matchedPattern: undefined,
         source: "bash",
       };
     }

@@ -754,6 +754,155 @@ runTest("BashFilter uses opencode-style last-match hierarchy", () => {
   assert.equal(generic.matchedPattern, "git *");
 });
 
+runTest("BashFilter allows piped commands when all subcommands match allowed patterns", () => {
+  const filter = new BashFilter(
+    {
+      "git status": "allow",
+      "grep *": "allow",
+      "echo *": "allow",
+    },
+    "ask",
+  );
+
+  const piped = filter.check("git status | grep branch");
+  assert.equal(piped.state, "allow");
+
+  const chained = filter.check("echo hello && echo world");
+  assert.equal(chained.state, "allow");
+
+  const sequential = filter.check("echo one ; echo two");
+  assert.equal(sequential.state, "allow");
+
+  const orChain = filter.check("echo ok || echo fallback");
+  assert.equal(orChain.state, "allow");
+});
+
+runTest("BashFilter returns most restrictive state for piped commands", () => {
+  const filter = new BashFilter(
+    {
+      "echo *": "allow",
+      "rm *": "deny",
+      "grep *": "ask",
+    },
+    "ask",
+  );
+
+  const pipedDeny = filter.check("echo hello | rm -rf /");
+  assert.equal(pipedDeny.state, "deny");
+  assert.equal(pipedDeny.matchedPattern, "rm *");
+
+  const pipedAsk = filter.check("echo hello | grep foo");
+  assert.equal(pipedAsk.state, "ask");
+  assert.equal(pipedAsk.matchedPattern, "grep *");
+});
+
+runTest("BashFilter falls back to default when any subcommand has no pattern match", () => {
+  const filter = new BashFilter(
+    {
+      "echo *": "allow",
+    },
+    "ask",
+  );
+
+  const partial = filter.check("echo hello | unknown_command");
+  assert.equal(partial.state, "ask");
+  assert.equal(partial.matchedPattern, undefined);
+});
+
+runTest("BashFilter respects quotes and subshells when splitting piped commands", () => {
+  const filter = new BashFilter(
+    {
+      "echo *": "allow",
+      "grep *": "allow",
+    },
+    "ask",
+  );
+
+  // Pipe inside quotes should NOT split
+  const quoted = filter.check("echo 'hello | world'");
+  assert.equal(quoted.state, "allow");
+  assert.equal(quoted.matchedPattern, "echo *");
+
+  // Pipe inside $(...) subshell should NOT split
+  const subshell = filter.check("echo $(cat file | grep match)");
+  assert.equal(subshell.state, "allow");
+  assert.equal(subshell.matchedPattern, "echo *");
+});
+
+runTest("BashFilter full-command pattern takes precedence over subcommand splitting", () => {
+  const filter = new BashFilter(
+    {
+      "git status | grep *": "deny",
+      "git status": "allow",
+      "grep *": "allow",
+    },
+    "ask",
+  );
+
+  // Full-command pattern matches first → deny (even though subcommands are allowed)
+  const fullMatch = filter.check("git status | grep branch");
+  assert.equal(fullMatch.state, "deny");
+  assert.equal(fullMatch.matchedPattern, "git status | grep *");
+});
+
+runTest("PermissionManager allows piped bash commands when all subcommands are permitted", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "ask",
+      mcp: "ask",
+      skills: "ask",
+      special: "ask",
+    },
+    bash: {
+      "git status": "allow",
+      "grep *": "allow",
+      "wc *": "allow",
+    },
+  });
+
+  try {
+    const piped = manager.checkPermission("bash", { command: "git status | grep branch" });
+    assert.equal(piped.state, "allow");
+    assert.equal(piped.source, "bash");
+
+    const multiPipe = manager.checkPermission("bash", { command: "git status | grep branch | wc -l" });
+    assert.equal(multiPipe.state, "allow");
+    assert.equal(multiPipe.source, "bash");
+
+    const partial = manager.checkPermission("bash", { command: "git status | unknown_cmd" });
+    assert.equal(partial.state, "ask");
+    assert.equal(partial.source, "bash");
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("PermissionManager returns most restrictive bash state across piped subcommands", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: {
+      tools: "allow",
+      bash: "ask",
+      mcp: "ask",
+      skills: "ask",
+      special: "ask",
+    },
+    bash: {
+      "echo *": "allow",
+      "rm -rf *": "deny",
+    },
+  });
+
+  try {
+    const denied = manager.checkPermission("bash", { command: "echo hello && rm -rf build" });
+    assert.equal(denied.state, "deny");
+    assert.equal(denied.source, "bash");
+    assert.equal(denied.matchedPattern, "rm -rf *");
+  } finally {
+    cleanup();
+  }
+});
+
 runTest("PermissionManager canonical built-in permission checking", () => {
   const { manager, cleanup } = createManager({
     defaultPolicy: {

@@ -1,10 +1,14 @@
-# 🔐 pi-permission-system
+# pi-permission-system
 
-[![npm version](https://img.shields.io/npm/v/pi-permission-system?style=flat-square)](https://www.npmjs.com/package/pi-permission-system) [![License](https://img.shields.io/github/license/MasuRii/pi-permission-system?style=flat-square)](LICENSE)
+## Important: read this
 
-Permission enforcement extension for the Pi coding agent that provides centralized, deterministic permission gates for tool, bash, MCP, skill, and special operations.
+This is a fork of the pi-permission-system extension that's available on npm. This version makes a couple of changes:
+* The built-in `read` tool will always ask for approval if .env is in the path, regardless of your config.
+* Piped commands are handled a bit better: if all commands are in the allow-list, the command with pipes is allowed; if any of them are ask, it asks for permission.
 
-<img width="1360" height="752" alt="image" src="https://github.com/user-attachments/assets/3e85190a-17fa-4d94-ac8e-efa54337df5d" />
+The changes were mostly vibed using Opus 4.6. In my brief testing, it worked, but ymmv.
+
+Below is the rest of the original README.
 
 ## Coming from OpenCode?
 
