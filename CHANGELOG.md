@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-22
+
+### Added
+- Added `logPlaintextBashCommands` as an opt-in extension setting and settings-modal control; review logs redact raw bash command strings by default while retaining safe metadata.
+- Added structured edit summaries for `replace`, `append`, `prepend`, `replace_text`, and `delete` payloads in permission prompts.
+- Added skill-read enforcement for direct `read` calls under global and project Pi skill directories by inferring the skill name from the requested path when prompt entries are absent.
+
+### Changed
+- Hardened subagent permission forwarding with watched request directories, async request/response reads, and nonce-bound responses.
+- Updated package metadata and lockfile version to `0.5.0` and migrated Pi peer dependency metadata to the `@earendil-works` scope.
+
 ## [0.4.9] - 2026-05-05
 
 ### Changed
