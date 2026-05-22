@@ -4,11 +4,11 @@ import { mock } from "bun:test";
 import type { PermissionSystemExtensionConfig } from "../src/extension-config.js";
 import { runAsyncTest, runTest } from "./test-harness.js";
 
-mock.module("@mariozechner/pi-coding-agent", () => ({
+mock.module("@earendil-works/pi-coding-agent", () => ({
   getSettingsListTheme: () => ({}),
 }));
 
-mock.module("@mariozechner/pi-tui", () => ({
+mock.module("@earendil-works/pi-tui", () => ({
   Box: class {},
   Container: class {
     addChild(): void {}
@@ -107,6 +107,7 @@ runTest("permission-system command exposes no subcommand completions", () => {
   const registeredDefinition = registerForTest({
     debugLog: false,
     permissionReviewLog: true,
+    logPlaintextBashCommands: false,
     yoloMode: false,
   });
 
@@ -117,6 +118,7 @@ await runAsyncTest("permission-system command only opens the settings modal", as
   const config: PermissionSystemExtensionConfig = {
     debugLog: true,
     permissionReviewLog: false,
+    logPlaintextBashCommands: true,
     yoloMode: true,
   };
   const registeredDefinition = registerForTest(config);
@@ -142,6 +144,7 @@ await runAsyncTest("permission-system command only opens the settings modal", as
   assert.deepEqual(config, {
     debugLog: true,
     permissionReviewLog: false,
+    logPlaintextBashCommands: true,
     yoloMode: true,
   });
 });
