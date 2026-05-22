@@ -190,7 +190,7 @@ export function resolveSkillPromptEntries(
   }
 
   const permissionCache = new Map<string, PermissionState>();
-  const visibleEntries: SkillPromptEntry[] = [];
+  const enforcementEntries: SkillPromptEntry[] = [];
   const replacements: Array<{ start: number; end: number; content: string }> = [];
 
   for (const section of sections) {
@@ -198,9 +198,9 @@ export function resolveSkillPromptEntries(
       const state = resolvePermissionState(entry.name, permissionManager, agentName, permissionCache);
       return createResolvedSkillEntry(entry, state, cwd);
     });
+    enforcementEntries.push(...resolvedEntries);
 
     const visibleSectionEntries = resolvedEntries.filter((entry) => entry.state !== "deny");
-    visibleEntries.push(...visibleSectionEntries);
 
     if (visibleSectionEntries.length === resolvedEntries.length) {
       continue;
@@ -214,7 +214,7 @@ export function resolveSkillPromptEntries(
   }
 
   if (replacements.length === 0) {
-    return { prompt, entries: visibleEntries };
+    return { prompt, entries: enforcementEntries };
   }
 
   let sanitizedPrompt = prompt;
@@ -227,7 +227,7 @@ export function resolveSkillPromptEntries(
 
   return {
     prompt: sanitizedPrompt,
-    entries: visibleEntries,
+    entries: enforcementEntries,
   };
 }
 

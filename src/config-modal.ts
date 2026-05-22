@@ -1,5 +1,5 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import type { SettingItem } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { SettingItem } from "@earendil-works/pi-tui";
 
 import type { PermissionSystemExtensionConfig } from "./extension-config.js";
 import { ZellijModal, ZellijSettingsModal } from "./zellij-modal.js";
@@ -37,6 +37,13 @@ function buildSettingItems(config: PermissionSystemExtensionConfig): SettingItem
       values: ON_OFF,
     },
     {
+      id: "logPlaintextBashCommands",
+      label: "Plaintext bash commands in review log",
+      description: "Opt in to storing raw bash command strings; disabled stores only safe command metadata",
+      currentValue: toOnOff(config.logPlaintextBashCommands),
+      values: ON_OFF,
+    },
+    {
       id: "debugLog",
       label: "Debug logging",
       description: "Write verbose permission-system diagnostics to the extension logs directory",
@@ -56,6 +63,8 @@ function applySetting(
       return { ...config, yoloMode: value === "on" };
     case "permissionReviewLog":
       return { ...config, permissionReviewLog: value === "on" };
+    case "logPlaintextBashCommands":
+      return { ...config, logPlaintextBashCommands: value === "on" };
     case "debugLog":
       return { ...config, debugLog: value === "on" };
     default:
@@ -66,6 +75,7 @@ function applySetting(
 function syncSettingValues(settingsList: SettingValueSyncTarget, config: PermissionSystemExtensionConfig): void {
   settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
   settingsList.updateValue("permissionReviewLog", toOnOff(config.permissionReviewLog));
+  settingsList.updateValue("logPlaintextBashCommands", toOnOff(config.logPlaintextBashCommands));
   settingsList.updateValue("debugLog", toOnOff(config.debugLog));
 }
 
