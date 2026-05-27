@@ -10,6 +10,7 @@ export const EXTENSION_ID = "pi-permission-system";
 export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;
+  logPlaintextBashCommands: boolean;
   yoloMode: boolean;
 }
 
@@ -27,6 +28,7 @@ export interface PermissionSystemConfigSaveResult {
 export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debugLog: false,
   permissionReviewLog: true,
+  logPlaintextBashCommands: false,
   yoloMode: false,
 };
 
@@ -64,6 +66,7 @@ export function cloneDefaultConfig(): PermissionSystemExtensionConfig {
   return {
     debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
+    logPlaintextBashCommands: DEFAULT_EXTENSION_CONFIG.logPlaintextBashCommands,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
   };
 }
@@ -77,6 +80,7 @@ export function normalizePermissionSystemConfig(raw: unknown): PermissionSystemE
   return {
     debugLog: record.debugLog === true,
     permissionReviewLog: record.permissionReviewLog !== false,
+    logPlaintextBashCommands: record.logPlaintextBashCommands === true,
     yoloMode: record.yoloMode === true,
   };
 }

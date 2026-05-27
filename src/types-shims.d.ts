@@ -26,7 +26,7 @@ declare function setTimeout(
   timeout?: number,
   ...args: any[]
 ): NodeJS.Timeout;
-declare function clearTimeout(timeoutId: NodeJS.Timeout | undefined): void;
+declare function clearTimeout(timeoutId: NodeJS.Timeout | null | undefined): void;
 declare function setInterval(
   handler: (...args: any[]) => void,
   timeout?: number,
@@ -46,6 +46,10 @@ declare module "node:crypto" {
 }
 
 declare module "node:fs" {
+  export interface FSWatcher {
+    close(): void;
+    on(event: "error", listener: (error: unknown) => void): this;
+  }
   export function appendFileSync(...args: any[]): void;
   export function existsSync(path: string): boolean;
   export function mkdirSync(...args: any[]): any;
@@ -57,6 +61,7 @@ declare module "node:fs" {
   export function rmdirSync(...args: any[]): void;
   export function statSync(...args: any[]): { mtimeMs: number };
   export function unlinkSync(...args: any[]): void;
+  export function watch(...args: any[]): FSWatcher;
   export function writeFileSync(...args: any[]): void;
 }
 
@@ -67,6 +72,7 @@ declare module "node:os" {
 
 declare module "node:path" {
   export const sep: string;
+  export function basename(path: string): string;
   export function dirname(path: string): string;
   export function join(...segments: string[]): string;
   export function normalize(path: string): string;
@@ -83,7 +89,7 @@ declare module "bun:test" {
   };
 }
 
-declare module "@mariozechner/pi-coding-agent" {
+declare module "@earendil-works/pi-coding-agent" {
   export type Theme = any;
 
   export interface ExtensionUIContext {
@@ -131,7 +137,7 @@ declare module "@mariozechner/pi-coding-agent" {
   export function isToolCallEventType(toolName: string, event: unknown): boolean;
 }
 
-declare module "@mariozechner/pi-ai" {
+declare module "@earendil-works/pi-ai" {
   export type Api = string;
   export type AssistantMessageEventStream = any;
   export type Context = any;
@@ -150,7 +156,7 @@ declare module "@mariozechner/pi-ai" {
   export function getApiProvider(api: Api): { streamSimple: (...args: any[]) => AssistantMessageEventStream } | undefined;
 }
 
-declare module "@mariozechner/pi-tui" {
+declare module "@earendil-works/pi-tui" {
   export interface SettingItem {
     id: string;
     label: string;

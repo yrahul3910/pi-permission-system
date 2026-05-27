@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-26
+
+### Added
+- Added `hasAllowedSkills()` method to `PermissionManager` that checks whether the resolved permission config has any explicitly allowed skills, returning true when the default skills policy is not "deny" or at least one individual skill entry has state "allow".
+- Added skill-scoped `read` tool exception so the `read` tool remains exposed to agents with explicitly allowed skills even when the `read` tool-level permission is "deny", enabling skill file access without granting unrestricted read access.
+
+### Changed
+- Widened Pi peer dependency ranges to `^0.74.0 || ^0.75.0` and bumped dev dependencies to `^0.75.5`.
+
+## [0.5.0] - 2026-05-22
+
+### Added
+- Added `logPlaintextBashCommands` as an opt-in extension setting and settings-modal control; review logs redact raw bash command strings by default while retaining safe metadata.
+- Added structured edit summaries for `replace`, `append`, `prepend`, `replace_text`, and `delete` payloads in permission prompts.
+- Added skill-read enforcement for direct `read` calls under global and project Pi skill directories by inferring the skill name from the requested path when prompt entries are absent.
+
+### Changed
+- Hardened subagent permission forwarding with watched request directories, async request/response reads, and nonce-bound responses.
+- Updated package metadata and lockfile version to `0.5.0` and migrated Pi peer dependency metadata to the `@earendil-works` scope.
+
 ## [0.4.9] - 2026-05-05
 
 ### Changed

@@ -2,7 +2,8 @@ import { join } from "node:path";
 
 import type { PermissionDecisionState } from "./permission-dialog.js";
 
-export const PERMISSION_FORWARDING_POLL_INTERVAL_MS = 250;
+export const PERMISSION_FORWARDING_POLL_INTERVAL_MS = 2_000;
+export const PERMISSION_FORWARDING_WATCH_DEBOUNCE_MS = 25;
 export const PERMISSION_FORWARDING_TIMEOUT_MS = 10 * 60 * 1000;
 export const SUBAGENT_ENV_HINT_KEYS = ["PI_IS_SUBAGENT", "PI_SUBAGENT_SESSION_ID", "PI_AGENT_ROUTER_SUBAGENT"] as const;
 export const SUBAGENT_PARENT_SESSION_ENV_KEY = "PI_AGENT_ROUTER_PARENT_SESSION_ID";
@@ -16,6 +17,7 @@ const SESSION_FORWARDING_RESPONSES_DIRECTORY_NAME = "responses";
 
 export type ForwardedPermissionRequest = {
   id: string;
+  responseNonce: string;
   createdAt: number;
   requesterSessionId: string;
   targetSessionId: string;
@@ -24,6 +26,8 @@ export type ForwardedPermissionRequest = {
 };
 
 export type ForwardedPermissionResponse = {
+  requestId: string;
+  responseNonce: string;
   approved: boolean;
   state: PermissionDecisionState;
   denialReason?: string;

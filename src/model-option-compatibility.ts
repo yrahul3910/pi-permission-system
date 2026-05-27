@@ -5,8 +5,8 @@ import {
   type Context as LlmContext,
   type Model,
   type SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const GUARDED_TEMPERATURE_APIS = [
   "openai-codex-responses",
