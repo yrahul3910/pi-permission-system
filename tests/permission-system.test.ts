@@ -1465,6 +1465,85 @@ permission:
   }
 });
 
+runTest("hasAllowedSkills detects explicitly allowed skills", () => {
+  // Agent with specific allowed skills
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "deny", special: "ask" },
+      skills: { "allowed-skill": "allow" },
+    },
+    {},
+  );
+
+  try {
+    assert.equal(manager.hasAllowedSkills(), true);
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("hasAllowedSkills returns false when no skills are allowed", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "deny", special: "ask" },
+    },
+    {},
+  );
+
+  try {
+    assert.equal(manager.hasAllowedSkills(), false);
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("hasAllowedSkills returns true when default skills policy is not deny", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "allow", special: "ask" },
+    },
+    {},
+  );
+
+  try {
+    assert.equal(manager.hasAllowedSkills(), true);
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("hasAllowedSkills respects per-agent skill allow overrides", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "deny", special: "ask" },
+      skills: { "*": "deny", "reviewer-skill": "allow" },
+    },
+    {},
+  );
+
+  try {
+    assert.equal(manager.hasAllowedSkills(), true);
+  } finally {
+    cleanup();
+  }
+});
+
+runTest("hasAllowedSkills returns false for agent with all denied skills", () => {
+  const { manager, cleanup } = createManager(
+    {
+      defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "deny", special: "ask" },
+      skills: { "*": "deny" },
+    },
+    {},
+  );
+
+  try {
+    assert.equal(manager.hasAllowedSkills(), false);
+  } finally {
+    cleanup();
+  }
+});
+
 runTest("getToolPermission supports arbitrary extension tool names", () => {
   const { manager, cleanup } = createManager({
     defaultPolicy: {
@@ -2257,7 +2336,7 @@ await runAsyncTest("tool_call blocks direct reads of denied skill files even whe
     });
 
     assert.equal(result.block, true);
-    assert.match(String(result.reason), /not permitted to access skill 'blocked-skill'/);
+    assert.match(String(result.reason), /not permitted to access this skill/);
   } finally {
     await harness.cleanup();
   }
@@ -2296,7 +2375,7 @@ await runAsyncTest("tool_call blocks reads below denied skill directories", asyn
     });
 
     assert.equal(result.block, true);
-    assert.match(String(result.reason), /not permitted to access skill 'blocked-skill'/);
+    assert.match(String(result.reason), /not permitted to access this skill/);
   } finally {
     await harness.cleanup();
   }
@@ -2323,7 +2402,7 @@ await runAsyncTest("tool_call blocks project skill reads even when the skill was
     });
 
     assert.equal(result.block, true);
-    assert.match(String(result.reason), /not permitted to access skill 'hidden-skill'/);
+    assert.match(String(result.reason), /not permitted to access this skill/);
   } finally {
     await harness.cleanup();
   }
@@ -2361,6 +2440,108 @@ await runAsyncTest("tool_call still allows reads for explicitly allowed skill fi
     });
 
     assert.deepEqual(result, {});
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("tool_call allows read of allowed skill even when read tool is deny", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "ask", mcp: "ask", skills: "deny", special: "allow" },
+      tools: { read: "deny" },
+      skills: { "allowed-skill": "allow" },
+    },
+    ["read"],
+  );
+  const allowedSkillPath = join(harness.cwd, "skills", "allowed", "SKILL.md");
+  const prompt = [
+    '<active_agent name="orchestrator" mode="direct">',
+    "<available_skills>",
+    "  <skill>",
+    "    <name>allowed-skill</name>",
+    "    <description>Allowed skill</description>",
+    `    <location>${allowedSkillPath}</location>`,
+    "  </skill>",
+    "</available_skills>",
+  ].join("\n");
+
+  try {
+    const ctx = createMockContext(harness.cwd, harness.prompts);
+    const startResult = await Promise.resolve(harness.handlers.before_agent_start?.({ systemPrompt: prompt }, ctx)) as Record<string, unknown> | undefined;
+    assert.equal(String(startResult?.systemPrompt ?? prompt).includes("allowed-skill"), true);
+
+    const result = await runToolCall(harness, {
+      toolName: "read",
+      toolCallId: "skill-read-overrides-read-deny",
+      input: { path: allowedSkillPath },
+    });
+
+    assert.deepEqual(result, {});
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("tool_call allows read of allowed skill even when tools default policy is deny", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "deny", bash: "ask", mcp: "ask", skills: "deny", special: "allow" },
+      skills: { "allowed-skill": "allow" },
+    },
+    ["read"],
+  );
+  const allowedSkillPath = join(harness.cwd, "skills", "allowed", "SKILL.md");
+  const prompt = [
+    '<active_agent name="orchestrator" mode="direct">',
+    "<available_skills>",
+    "  <skill>",
+    "    <name>allowed-skill</name>",
+    "    <description>Allowed skill</description>",
+    `    <location>${allowedSkillPath}</location>`,
+    "  </skill>",
+    "</available_skills>",
+  ].join("\n");
+
+  try {
+    const ctx = createMockContext(harness.cwd, harness.prompts);
+    const startResult = await Promise.resolve(harness.handlers.before_agent_start?.({ systemPrompt: prompt }, ctx)) as Record<string, unknown> | undefined;
+    assert.equal(String(startResult?.systemPrompt ?? prompt).includes("allowed-skill"), true);
+
+    const result = await runToolCall(harness, {
+      toolName: "read",
+      toolCallId: "skill-read-overrides-tools-deny",
+      input: { path: allowedSkillPath },
+    });
+
+    assert.deepEqual(result, {});
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("tool_call still blocks read of non-skill file when read tool is deny", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "ask", mcp: "ask", skills: "allow", special: "allow" },
+      tools: { read: "deny" },
+    },
+    ["read"],
+  );
+  const nonSkillPath = join(harness.cwd, "src", "main.ts");
+
+  try {
+    const ctx = createMockContext(harness.cwd, harness.prompts);
+    await Promise.resolve(harness.handlers.before_agent_start?.({ systemPrompt: "No skills in this prompt" }, ctx));
+
+    const result = await runToolCall(harness, {
+      toolName: "read",
+      toolCallId: "non-skill-read-denied",
+      input: { path: nonSkillPath },
+    });
+
+    assert.equal(result.block, true);
+    assert.match(String(result.reason), /not permitted to run 'read'/);
   } finally {
     await harness.cleanup();
   }
@@ -2833,6 +3014,81 @@ await runAsyncTest("permission review logs redact raw prompts and tool input pre
     assert.equal(reviewLog.includes("super-secret-token"), false);
     assert.equal(reviewLog.includes("customer record"), false);
     assert.equal(reviewLog.includes("Current agent requested tool"), false);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Targeted smoke test: skill read denial via agent-level '*': deny
+// ---------------------------------------------------------------------------
+
+await runAsyncTest("TARGETED SMOKE: agent 'code' with '*': deny blocked from reading 'test-driven-development/SKILL.md'", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "ask", mcp: "ask", skills: "allow", special: "allow" },
+    },
+    ["read"],
+  );
+  const tddSkillPath = join(harness.cwd, ".pi", "agent", "skills", "test-driven-development", "SKILL.md");
+
+  try {
+    writeFileSync(join(harness.baseDir, "agents", "code.md"), [
+      "---",
+      "name: code",
+      "permission:",
+      "  skills:",
+      "    '*': deny",
+      "---",
+      "",
+    ].join("\n"), "utf8");
+
+    const ctx = createMockContext(harness.cwd, harness.prompts);
+    await Promise.resolve(harness.handlers.before_agent_start?.(
+      { systemPrompt: '<active_agent name="code" mode="delegated">\nNo skills listed.' },
+      ctx,
+    ));
+
+    // ---- Check 1: The read IS blocked ----
+    const result = await runToolCall(harness, {
+      toolName: "read",
+      toolCallId: "tdd-skill-read-denied",
+      input: { path: tddSkillPath },
+    });
+    assert.equal(result.block, true, "CHECK 1 FAILED: Read of skill denied via '*': deny must be blocked");
+    console.log("  [PASS] CHECK 1: block = true (read correctly denied)");
+
+    // ---- Check 2: Reason does NOT contain the skill name ----
+    const reason = String(result.reason ?? "");
+    const nameLeaked = reason.includes("test-driven-development");
+    console.log("  [CHECK 2] Skill name leaked: " + nameLeaked);
+    console.log("  [CHECK 2] Reason text: " + reason);
+    assert.equal(nameLeaked, false, "CHECK 2 FAILED: Deny reason leaks the skill name—security concern");
+
+    // ---- Check 3: yoloMode does NOT auto-approve a deny-state read ----
+    const { savePermissionSystemConfig, DEFAULT_EXTENSION_CONFIG } = await import("../src/extension-config.js");
+    savePermissionSystemConfig({ ...DEFAULT_EXTENSION_CONFIG, yoloMode: true });
+    const yoloResult = await runToolCall(harness, {
+      toolName: "read",
+      toolCallId: "tdd-skill-read-yolo",
+      input: { path: tddSkillPath },
+    });
+    assert.equal(yoloResult.block, true, "CHECK 3 FAILED: yoloMode must NOT auto-approve denied skill read");
+    console.log("  [PASS] CHECK 3: yoloMode does NOT auto-approve deny-state read");
+    savePermissionSystemConfig({ ...DEFAULT_EXTENSION_CONFIG, yoloMode: false });
+
+    // ---- Check 4: inferSkillEntryFromReadPath correctly identifies the skill ----
+    // Non-skill path should NOT be blocked by skill policy
+    const nonSkillResult = await runToolCall(harness, {
+      toolName: "read",
+      toolCallId: "non-skill-check",
+      input: { path: join(harness.cwd, "src", "main.ts") },
+    });
+    assert.deepEqual(nonSkillResult, {}, "CHECK 4 FAILED: Non-skill reads should pass through unblocked");
+    // The skill path IS blocked with skill-specific reason (not "not permitted to run 'read'")
+    // This proves inference found "test-driven-development"
+    assert.equal(reason.includes("not permitted to access this skill"), true, "CHECK 4 FAILED: Block was not skill-specific");
+    console.log("  [PASS] CHECK 4: inferSkillEntryFromReadPath correctly identifies 'test-driven-development'");
   } finally {
     await harness.cleanup();
   }
