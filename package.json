@@ -1,6 +1,6 @@
 {
   "name": "pi-permission-system",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Permission enforcement extension for the Pi coding agent.",
   "type": "module",
   "main": "./index.ts",
@@ -61,9 +61,9 @@
   },
   "peerDependencies": {
     "@sinclair/typebox": "^0.34.49",
-    "@earendil-works/pi-ai": "^0.75.4",
-    "@earendil-works/pi-coding-agent": "^0.75.4",
-    "@earendil-works/pi-tui": "^0.75.4"
+    "@earendil-works/pi-ai": "^0.74.0 || ^0.75.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0",
+    "@earendil-works/pi-tui": "^0.74.0 || ^0.75.0"
   },
   "dependencies": {
     "jsonc-parser": "^3.3.1"
