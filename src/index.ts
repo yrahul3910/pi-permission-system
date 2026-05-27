@@ -562,7 +562,7 @@ function formatSkillPathAskPrompt(skill: SkillPromptEntry, readPath: string, age
 
 function formatSkillPathDenyReason(skill: SkillPromptEntry, readPath: string, agentName?: string): string {
   const subject = agentName ? `Agent '${agentName}'` : "Current agent";
-  return `${subject} is not permitted to access skill '${skill.name}' via '${readPath}'.`;
+  return `${subject} is not permitted to access this skill.`;
 }
 
 function extractSkillNameUnderRoot(normalizedReadPath: string, normalizedSkillsRoot: string): string | null {
@@ -1734,7 +1734,18 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // This ensures that agent-specific tool deny rules (e.g., bash: deny) are respected
     // before any command-level permissions are considered
     const toolPermission = permissionManager.getToolPermission(toolName, agentName ?? undefined);
-    return toolPermission !== "deny";
+    if (toolPermission !== "deny") {
+      return true;
+    }
+
+    // If the read tool is denied but the agent has explicitly allowed skills,
+    // expose read anyway so the agent can read skill files. The tool_call handler
+    // will restrict reads to skill paths only.
+    if (toolName === "read" && permissionManager.hasAllowedSkills(agentName ?? undefined)) {
+      return true;
+    }
+
+    return false;
   };
 
   const refreshSessionRuntimeState = (ctx: ExtensionContext): void => {
@@ -1915,7 +1926,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
             });
             return {
               block: true,
-              reason: `Accessing skill '${readSkill.name}' requires approval, but no interactive UI is available.`,
+              reason: `Accessing this skill requires approval, but no interactive UI is available.`,
             };
           }
 
@@ -1931,9 +1942,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           });
           if (!decision.approved) {
             const denialReason = decision.denialReason ? ` Reason: ${decision.denialReason}.` : "";
-            return { block: true, reason: `User denied access to skill '${readSkill.name}'.${denialReason}` };
+            return { block: true, reason: `User denied access to this skill.${denialReason}` };
           }
         }
+      }
+
+      if (readSkill) {
+        return {};
       }
     }
 

@@ -732,6 +732,25 @@ export class PermissionManager {
     return merged.bash || {};
   }
 
+  /**
+   * Check whether the resolved permission config has any explicitly allowed skills.
+   * Used to decide if path-bearing tools like `read` should remain exposed to an agent
+   * even when the tool-level permission is `deny`, so the agent can read skill files.
+   *
+   * Returns true when any of these conditions holds:
+   * - The default skills policy is not "deny" (allows all skills by default)
+   * - At least one individual skill entry has state "allow"
+   */
+  hasAllowedSkills(agentName?: string): boolean {
+    const { merged } = this.resolvePermissions(agentName);
+    const defaultPolicy = merged.defaultPolicy.skills;
+    if (defaultPolicy !== "deny") {
+      return true;
+    }
+    const skillsRecord = merged.skills || {};
+    return Object.values(skillsRecord).some((state) => state === "allow");
+  }
+
   private getConfiguredMcpServerNames(): readonly string[] {
     if (this.configuredMcpServerNamesOverride) {
       return this.configuredMcpServerNamesOverride;
