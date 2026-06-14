@@ -1,5 +1,5 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import type { SettingItem } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { SettingItem } from "@earendil-works/pi-tui";
 
 import type { PermissionSystemExtensionConfig } from "./extension-config.js";
 import { ZellijModal, ZellijSettingsModal } from "./zellij-modal.js";
@@ -23,24 +23,17 @@ function toOnOff(value: boolean): string {
 function buildSettingItems(config: PermissionSystemExtensionConfig): SettingItem[] {
   return [
     {
+      id: "debug",
+      label: "Debug logging",
+      description: "Write diagnostics and permission review entries to the extension debug file",
+      currentValue: toOnOff(config.debug),
+      values: ON_OFF,
+    },
+    {
       id: "yoloMode",
       label: "YOLO mode",
       description: "Auto-approve ask-state permission checks, including subagent approval forwarding",
       currentValue: toOnOff(config.yoloMode),
-      values: ON_OFF,
-    },
-    {
-      id: "permissionReviewLog",
-      label: "Permission review log",
-      description: "Write permission request and decision audit events to the extension logs directory",
-      currentValue: toOnOff(config.permissionReviewLog),
-      values: ON_OFF,
-    },
-    {
-      id: "debugLog",
-      label: "Debug logging",
-      description: "Write verbose permission-system diagnostics to the extension logs directory",
-      currentValue: toOnOff(config.debugLog),
       values: ON_OFF,
     },
   ];
@@ -52,24 +45,21 @@ function applySetting(
   value: string,
 ): PermissionSystemExtensionConfig {
   switch (id) {
+    case "debug":
+      return { ...config, debug: value === "on" };
     case "yoloMode":
       return { ...config, yoloMode: value === "on" };
-    case "permissionReviewLog":
-      return { ...config, permissionReviewLog: value === "on" };
-    case "debugLog":
-      return { ...config, debugLog: value === "on" };
     default:
       return config;
   }
 }
 
 function syncSettingValues(settingsList: SettingValueSyncTarget, config: PermissionSystemExtensionConfig): void {
+  settingsList.updateValue("debug", toOnOff(config.debug));
   settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
-  settingsList.updateValue("permissionReviewLog", toOnOff(config.permissionReviewLog));
-  settingsList.updateValue("debugLog", toOnOff(config.debugLog));
 }
 
-async function openSettingsModal(ctx: ExtensionCommandContext, controller: PermissionSystemConfigController): Promise<void> {
+export async function openPermissionSystemSettingsModal(ctx: ExtensionCommandContext, controller: PermissionSystemConfigController): Promise<void> {
   const overlayOptions = { anchor: "center" as const, width: 82, maxHeight: "85%" as const, margin: 1 };
 
   await ctx.ui.custom<void>(
@@ -80,7 +70,7 @@ async function openSettingsModal(ctx: ExtensionCommandContext, controller: Permi
       settingsModal = new ZellijSettingsModal(
         {
           title: "Permission System Settings",
-          description: "Local extension options for permission logging and auto-approval behavior",
+          description: "Local extension options for debug logging and auto-approval behavior",
           settings: buildSettingItems(current),
           onChange: (id, newValue) => {
             current = applySetting(current, id, newValue);
@@ -133,14 +123,14 @@ async function openSettingsModal(ctx: ExtensionCommandContext, controller: Permi
 
 export function registerPermissionSystemCommand(pi: ExtensionAPI, controller: PermissionSystemConfigController): void {
   pi.registerCommand("permission-system", {
-    description: "Configure pi-permission-system logging and yolo-mode behavior",
+    description: "Configure pi-permission-system debug logging and yolo-mode behavior",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI) {
         ctx.ui.notify("/permission-system requires interactive TUI mode.", "warning");
         return;
       }
 
-      await openSettingsModal(ctx, controller);
+      await openPermissionSystemSettingsModal(ctx, controller);
     },
   });
 }

@@ -10,20 +10,21 @@ export type WildcardPatternMatch<TState> = {
   matchedName: string;
 };
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 export function compileWildcardPattern<TState>(pattern: string, state: TState): CompiledWildcardPattern<TState> {
-  const escaped = pattern
-    .split("*")
-    .map((part) => escapeRegExp(part))
-    .join(".*");
+  let escaped = pattern
+    .replaceAll("\\", "/")
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+
+  if (escaped.endsWith(" .*")) {
+    escaped = `${escaped.slice(0, -3)}( .*)?`;
+  }
 
   return {
     pattern,
     state,
-    regex: new RegExp(`^${escaped}$`),
+    regex: new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s"),
   };
 }
 
@@ -43,9 +44,10 @@ export function findCompiledWildcardMatch<TState>(
   patterns: readonly CompiledWildcardPattern<TState>[],
   name: string,
 ): WildcardPatternMatch<TState> | null {
+  const normalizedName = name.replaceAll("\\", "/");
   for (let index = patterns.length - 1; index >= 0; index -= 1) {
     const pattern = patterns[index];
-    if (pattern.regex.test(name)) {
+    if (pattern.regex.test(normalizedName)) {
       return {
         state: pattern.state,
         matchedPattern: pattern.pattern,

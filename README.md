@@ -99,12 +99,11 @@ If you are coming from OpenCode, you usually do **not** need to rewrite your who
 - **Runtime Enforcement** — Blocks/asks/allows at tool call time with UI confirmation dialogs and readable approval summaries
 - **Bash Command Control** — Wildcard pattern matching for granular bash command permissions
 - **MCP Access Control** — Server and tool-level permissions for MCP operations
-- **Skill Protection** — Controls which skills can be loaded or read from disk, including multi-block prompt sanitization
+- **Skill Protection** — Controls which skills can be loaded or read from disk, including multi-block prompt sanitization and path-inferred reads under Pi skill directories
 - **Per-Agent Overrides** — Agent-specific permission policies via YAML frontmatter
 - **Subagent Permission Forwarding** — Forwards `ask` confirmations from non-UI subagents back to the main interactive session
 - **Runtime YOLO Control** — Lets users toggle yolo mode from the settings modal and lets other extensions toggle it through the runtime API
-- **File-Based Review Logging** — Writes permission request/denial review entries to a file by default for later auditing
-- **Optional Debug Logging** — Keeps verbose extension diagnostics in a separate file when enabled in `config.json`
+- **File-Based Debug Logging** — Writes verbose diagnostics and permission request/denial review entries to one debug file when enabled in `config.json`, including the responsible agent and raw tool-call input
 - **JSON Schema Validation** — Full schema for editor autocomplete and config validation
 - **External Directory Guard** — Enforces `special.external_directory` for path-bearing file tools that target paths outside the active working directory
 
@@ -163,6 +162,8 @@ All permissions use one of three states:
 | `deny`  | Blocks the action with an error message     |
 | `ask`   | Prompts the user for confirmation via UI    |
 
+When an `ask` permission prompts, the confirmation UI offers `Allow Once`, `Allow Always`, `Reject`, and `Reject with Reason`. `Allow Once` records an in-memory approval for the current runtime, `Allow Always` persists a matching approval rule for future sessions, and rejected decisions can include an optional reason shown back to the agent.
+
 ### Pi Integration Hooks
 
 The extension integrates via Pi's lifecycle hooks:
@@ -171,7 +172,7 @@ The extension integrates via Pi's lifecycle hooks:
 |----------------------|-------------------------------------------------------------------------------------------|
 | `before_agent_start` | Filters active tools, removes denied tool entries from the system prompt, and hides denied skills |
 | `tool_call`          | Enforces permissions for every tool invocation                                            |
-| `input`              | Intercepts `/skill:<name>` requests and enforces skill policy                             |
+| `input`              | Tracks explicit `/skill:<name>` requests so user-invoked skill loads can proceed while agent-initiated reads remain policy-gated |
 
 **Additional behaviors:**
 - Unknown/unregistered tools are blocked before permission checks (prevents bypass attempts)
@@ -179,8 +180,10 @@ The extension integrates via Pi's lifecycle hooks:
 - Extension-provided tools like `task`, `mcp`, and third-party tools are handled through the same registered-tool permission layer instead of private built-in hardcodes
 - When a subagent hits an `ask` permission without direct UI access, the request can be forwarded to the main interactive session for confirmation
 - Generic extension-tool approval prompts include a bounded input preview; built-in file tools use concise human-readable summaries instead of raw multiline JSON
-- Permission review logs include requested bash command text plus redacted prompt/input metadata for auditing without writing raw prompts or generic tool payload previews
+- Debug review entries include the responsible agent, raw prompt, raw tool-call input, command, target, and decision metadata for auditing.
 - Path-bearing file tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) evaluate `special.external_directory` before their normal tool permission when an explicit path points outside `ctx.cwd`
+- `read` calls under global and project Pi skill directories are checked against `skills` policy even when the skill entry is inferred from the path rather than an active prompt block.
+- Structured edit payloads are summarized by operation and line count in prompts so permission decisions do not require raw multiline JSON.
 
 ## Configuration
 
@@ -190,23 +193,21 @@ The extension integrates via Pi's lifecycle hooks:
 
 Set `PI_PERMISSION_SYSTEM_CONFIG_PATH` to point this extension at a specific config file when the default global path is not appropriate.
 
-The extension creates this file automatically when it is missing. It controls extension-local logging behavior and yolo mode defaults:
+The extension creates this file automatically when it is missing. It controls extension-local debug logging behavior and yolo mode defaults:
 
 ```json
 {
-  "debugLog": false,
-  "permissionReviewLog": true,
+  "debug": false,
   "yoloMode": false
 }
 ```
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `debugLog` | `false` | Enables verbose diagnostic logging to `logs/pi-permission-system-debug.jsonl` |
-| `permissionReviewLog` | `true` | Enables the permission request/denial review log at `logs/pi-permission-system-permission-review.jsonl` |
+| `debug` | `false` | Enables verbose diagnostics and permission review entries in `logs/pi-permission-system-debug.jsonl` |
 | `yoloMode` | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled |
 
-Both logs write to files only under the extension directory by default. Set `PI_PERMISSION_SYSTEM_LOGS_DIR` to redirect review/debug logs to a specific directory. No debug output is printed to the terminal.
+Debug output writes only under the extension directory by default. Set `PI_PERMISSION_SYSTEM_LOGS_DIR` to redirect the debug file to a specific directory. No debug output is printed to the terminal.
 
 ### Runtime YOLO Control
 
@@ -434,6 +435,7 @@ Skill name patterns use `*` wildcards:
 }
 ```
 
+Skill-read enforcement also applies when a `read` path is under the global Pi skills directory (`~/.pi/agent/skills` or `PI_CODING_AGENT_DIR/skills`) or the active project's `.pi/agent/skills` directory. In that case the skill name is inferred from the path and checked against `skills` policy even if no active prompt block listed the skill; direct user `/skill:<name>` requests are allowed to proceed for that requested skill.
 ### `special`
 
 Reserved permission checks:
@@ -553,21 +555,20 @@ Actual global logs directory: $PI_CODING_AGENT_DIR/extensions/pi-permission-syst
 Override logs directory: $PI_PERMISSION_SYSTEM_LOGS_DIR when set
 ```
 
-- `pi-permission-system-permission-review.jsonl` — enabled by default for permission review/audit history, including metadata hashes and lengths for prompts, commands, denial reasons, and tool input previews instead of raw sensitive content
-- `pi-permission-system-debug.jsonl` — disabled by default and intended for troubleshooting
+- `pi-permission-system-debug.jsonl` — disabled by default; includes troubleshooting diagnostics and permission review/audit entries with responsible agent metadata, raw prompts, raw tool-call inputs, commands, targets, and decisions
 
 ### Architecture
 
 ```
 index.ts                         → Root Pi entrypoint shim
 src/
-├── index.ts                     → Extension bootstrap, permission checks, readable prompts, review logging, reload handling, and subagent forwarding
+├── index.ts                     → Extension bootstrap, permission checks, readable prompts, debug review entries, reload handling, and subagent forwarding
 ├── before-agent-start-cache.ts  → Caches prompt/tool filtering state between before_agent_start runs
 ├── bash-filter.ts               → Bash command wildcard pattern matching
 ├── common.ts                    → Shared utilities (YAML parsing, type guards, etc.)
 ├── config-modal.ts              → `/permission-system` modal registration and settings UI wiring
 ├── extension-config.ts          → Extension-local config loading and default creation
-├── logging.ts                   → File-only debug/review logging helpers
+├── logging.ts                   → File-only debug logging helpers
 ├── model-option-compatibility.ts → Guards unsupported provider/model options
 ├── permission-dialog.ts         → Interactive permission approval UI helpers
 ├── permission-forwarding.ts     → Subagent-to-parent permission forwarding utilities
@@ -652,13 +653,13 @@ npx --yes ajv-cli@5 validate \
 
 ## Development
 
-Runtime checks require Node.js 20+; the test suite requires Bun 1.1+.
+Runtime checks require Node.js 20+; the test suite runs through Node.js with tsx and Node's experimental test module mocks (validated on Node.js 24).
 
 ```bash
 npm run build              # Run TypeScript type checks
 npm run lint               # Run local static checks
 npm run validate:artifacts # Validate JSON/schema/example artifacts
-npm run test               # Run Bun tests from ./tests
+npm run test               # Run Node/tsx tests from ./tests
 npm run check              # Run static, artifact, and test checks
 ```
 

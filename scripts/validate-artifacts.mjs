@@ -58,7 +58,9 @@ validatePolicyExample(readJson("config/config.example.json"));
 const packageJson = readJson("package.json");
 assert(packageJson.scripts?.typecheck?.includes("tsc"), "package.json must expose a TypeScript typecheck script");
 assert(!packageJson.scripts?.build?.includes("--noCheck"), "package.json build must not disable TypeScript checks");
-assert(typeof packageJson.engines?.bun === "string", "package.json engines must document the Bun test requirement");
+assert(packageJson.engines?.bun === undefined, "package.json engines must not require Bun for tests");
+assert(packageJson.scripts?.test?.includes("tsx"), "package.json test script must use the Node.js-compatible tsx runner");
+assert(!packageJson.scripts?.test?.includes("bun "), "package.json test script must not invoke Bun");
 
 const readme = readFileSync(join(root, "README.md"), "utf8");
 assert(!readme.includes("tool_call_limit"), "README must not document unsupported special.tool_call_limit");

@@ -8,8 +8,7 @@ import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.j
 export const EXTENSION_ID = "pi-permission-system";
 
 export interface PermissionSystemExtensionConfig {
-  debugLog: boolean;
-  permissionReviewLog: boolean;
+  debug: boolean;
   yoloMode: boolean;
 }
 
@@ -25,8 +24,7 @@ export interface PermissionSystemConfigSaveResult {
 }
 
 export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
-  debugLog: false,
-  permissionReviewLog: true,
+  debug: false,
   yoloMode: false,
 };
 
@@ -37,8 +35,6 @@ export function resolveExtensionRoot(moduleUrl = import.meta.url): string {
 export const EXTENSION_ROOT = resolveExtensionRoot();
 export const CONFIG_PATH = join(EXTENSION_ROOT, "config.json");
 export const LOGS_DIR = join(EXTENSION_ROOT, "logs");
-export const DEBUG_LOG_PATH = join(LOGS_DIR, `${EXTENSION_ID}-debug.jsonl`);
-export const PERMISSION_REVIEW_LOG_PATH = join(LOGS_DIR, `${EXTENSION_ID}-permission-review.jsonl`);
 export const CONFIG_PATH_ENV_KEY = "PI_PERMISSION_SYSTEM_CONFIG_PATH";
 export const LOGS_DIR_ENV_KEY = "PI_PERMISSION_SYSTEM_LOGS_DIR";
 
@@ -52,18 +48,13 @@ export function getPermissionSystemLogsDir(logsDir?: string): string {
   return logsDir || overrideDir || LOGS_DIR;
 }
 
-export function getPermissionSystemDebugLogPath(logsDir = getPermissionSystemLogsDir()): string {
+export function getPermissionSystemDebugPath(logsDir = getPermissionSystemLogsDir()): string {
   return join(logsDir, `${EXTENSION_ID}-debug.jsonl`);
-}
-
-export function getPermissionSystemReviewLogPath(logsDir = getPermissionSystemLogsDir()): string {
-  return join(logsDir, `${EXTENSION_ID}-permission-review.jsonl`);
 }
 
 export function cloneDefaultConfig(): PermissionSystemExtensionConfig {
   return {
-    debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
-    permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
+    debug: DEFAULT_EXTENSION_CONFIG.debug,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
   };
 }
@@ -75,8 +66,7 @@ function createDefaultConfigContent(): string {
 export function normalizePermissionSystemConfig(raw: unknown): PermissionSystemExtensionConfig {
   const record = toRecord(raw);
   return {
-    debugLog: record.debugLog === true,
-    permissionReviewLog: record.permissionReviewLog !== false,
+    debug: record.debug === true,
     yoloMode: record.yoloMode === true,
   };
 }

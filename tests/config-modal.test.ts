@@ -1,35 +1,39 @@
 import assert from "node:assert/strict";
-import { mock } from "bun:test";
+import { mock } from "node:test";
 
 import type { PermissionSystemExtensionConfig } from "../src/extension-config.js";
 import { runAsyncTest, runTest } from "./test-harness.js";
 
-mock.module("@mariozechner/pi-coding-agent", () => ({
-  getSettingsListTheme: () => ({}),
-}));
+mock.module("@earendil-works/pi-coding-agent", {
+  namedExports: {
+    getSettingsListTheme: () => ({}),
+  },
+});
 
-mock.module("@mariozechner/pi-tui", () => ({
-  Box: class {},
-  Container: class {
-    addChild(): void {}
-    render(): string[] {
-      return [];
-    }
-    invalidate(): void {}
+mock.module("@earendil-works/pi-tui", {
+  namedExports: {
+    Box: class {},
+    Container: class {
+      addChild(): void {}
+      render(): string[] {
+        return [];
+      }
+      invalidate(): void {}
+    },
+    SettingsList: class {
+      handleInput(): void {}
+      updateValue(): void {}
+      render(): string[] {
+        return [];
+      }
+      invalidate(): void {}
+    },
+    Spacer: class {},
+    Text: class {},
+    truncateToWidth: (text: string) => text,
+    visibleWidth: (text: string) => text.length,
   },
-  SettingsList: class {
-    handleInput(): void {}
-    updateValue(): void {}
-    render(): string[] {
-      return [];
-    }
-    invalidate(): void {}
-  },
-  Spacer: class {},
-  Text: class {},
-  truncateToWidth: (text: string) => text,
-  visibleWidth: (text: string) => text.length,
-}));
+});
 
 const { registerPermissionSystemCommand } = await import("../src/config-modal.js");
 
@@ -105,8 +109,7 @@ function registerForTest(config: PermissionSystemExtensionConfig): RegisteredCom
 
 runTest("permission-system command exposes no subcommand completions", () => {
   const registeredDefinition = registerForTest({
-    debugLog: false,
-    permissionReviewLog: true,
+    debug: false,
     yoloMode: false,
   });
 
@@ -115,8 +118,7 @@ runTest("permission-system command exposes no subcommand completions", () => {
 
 await runAsyncTest("permission-system command only opens the settings modal", async () => {
   const config: PermissionSystemExtensionConfig = {
-    debugLog: true,
-    permissionReviewLog: false,
+    debug: true,
     yoloMode: true,
   };
   const registeredDefinition = registerForTest(config);
@@ -140,8 +142,7 @@ await runAsyncTest("permission-system command only opens the settings modal", as
   assert.equal(subcommandCtx.getCustomCalls(), 3);
   assert.equal(subcommandCtx.notifications.length, 0);
   assert.deepEqual(config, {
-    debugLog: true,
-    permissionReviewLog: false,
+    debug: true,
     yoloMode: true,
   });
 });

@@ -1,4 +1,4 @@
-import type { ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { EXTENSION_ID, type PermissionSystemExtensionConfig } from "./extension-config.js";
 import { isYoloModeEnabled } from "./yolo-mode.js";
