@@ -44,8 +44,10 @@ function validatePolicyExample(config) {
   }
 }
 
-const extensionConfig = readJson("config.json");
-assert(extensionConfig && typeof extensionConfig === "object" && !Array.isArray(extensionConfig), "config.json must be an object");
+// This fork intentionally does not ship a root config.json: it is gitignored and
+// omitted from the published "files" list so installs fall back to runtime defaults
+// (see commit af1b531). The shipped policy artifact is config/config.example.json,
+// which is fully validated by validatePolicyExample() below.
 
 const schema = readJson("schemas/permissions.schema.json");
 const specialProperties = schema?.properties?.special?.properties;

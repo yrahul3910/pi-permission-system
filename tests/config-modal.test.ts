@@ -1,41 +1,12 @@
 import assert from "node:assert/strict";
-import { mock } from "node:test";
 
+// Imports the real config-modal module: it pulls pi-tui/pi-coding-agent values
+// only through zellij-modal, which is import-safe, and the settings modal
+// renderer is never invoked here (the custom() stub below does not run it), so
+// no module mocking is required to run under bun.
+import { registerPermissionSystemCommand } from "../src/config-modal.js";
 import type { PermissionSystemExtensionConfig } from "../src/extension-config.js";
 import { runAsyncTest, runTest } from "./test-harness.js";
-
-mock.module("@earendil-works/pi-coding-agent", {
-  namedExports: {
-    getSettingsListTheme: () => ({}),
-  },
-});
-
-mock.module("@earendil-works/pi-tui", {
-  namedExports: {
-    Box: class {},
-    Container: class {
-      addChild(): void {}
-      render(): string[] {
-        return [];
-      }
-      invalidate(): void {}
-    },
-    SettingsList: class {
-      handleInput(): void {}
-      updateValue(): void {}
-      render(): string[] {
-        return [];
-      }
-      invalidate(): void {}
-    },
-    Spacer: class {},
-    Text: class {},
-    truncateToWidth: (text: string) => text,
-    visibleWidth: (text: string) => text.length,
-  },
-});
-
-const { registerPermissionSystemCommand } = await import("../src/config-modal.js");
 
 type Notification = { message: string; level: "info" | "warning" | "error" };
 
