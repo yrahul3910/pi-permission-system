@@ -653,7 +653,7 @@ npx --yes ajv-cli@5 validate \
 
 ## Development
 
-Runtime checks require Node.js 20+; the test suite runs through Node.js with tsx and Node's experimental test module mocks (validated on Node.js 24).
+Runtime checks require Node.js 24+; the test suite runs through Node.js with tsx.
 
 ```bash
 npm run build              # Run TypeScript type checks

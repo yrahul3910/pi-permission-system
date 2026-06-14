@@ -48,7 +48,7 @@
     "url": "https://github.com/MasuRii/pi-permission-system/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "publishConfig": {
     "access": "public"

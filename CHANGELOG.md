@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added a GitHub Actions CI workflow that runs `npm run check` (typecheck, artifact validation, and the tsx test suite) on pushes to `main` and on pull requests.
+
+### Changed
+- Raised the minimum supported Node.js version to 24 and dropped Node.js 20/22.
+- Completed the Bun-to-tsx test migration in `package.json`: the `test` script now runs through `tsx` and `engines.bun` was removed (the 0.7.0 notes documented the migration, but `package.json` still invoked Bun).
+- The config-modal test no longer relies on `node:test` `mock.module()`; it imports the import-safe module directly so it runs under tsx without experimental flags.
+
+### Fixed
+- Fixed `npm run validate:artifacts` (and therefore `npm run check`): it no longer requires a root `config.json` (the fork ships only `config/config.example.json`), and the Bun assertions now match the actual tsx-based workflow.
+
 ## [0.7.0] - 2026-06-01
 
 ### Added
