@@ -221,9 +221,18 @@ config key.
 Notifications are delivered with the platform-native notifier and therefore do
 not depend on your terminal or multiplexer:
 
-- **macOS** — `osascript` (Notification Center)
+- **macOS** — [`terminal-notifier`](https://github.com/julienXX/terminal-notifier) if installed (recommended), otherwise `osascript` (Notification Center)
 - **Linux/BSD** — `notify-send` (install `libnotify` if missing)
 - **Windows** — PowerShell toast notification
+
+> **Recommended on macOS: install `terminal-notifier`** (`brew install terminal-notifier`).
+> When present, the extension uses it automatically. It is preferred over the
+> `osascript` fallback because `osascript` posts notifications as "Script Editor":
+> clicking one launches Script Editor's open-file dialog, and Script Editor must
+> be granted notification permission in **System Settings → Notifications** or the
+> notification is silently dropped. `terminal-notifier` has its own notification
+> identity, and clicking a notification reactivates your terminal (e.g. Ghostty)
+> instead of opening a file dialog.
 
 **Focus detection.** To avoid notifying you when you *are* looking at the tab,
 the extension enables terminal focus reporting (DEC private mode `1004`) and
