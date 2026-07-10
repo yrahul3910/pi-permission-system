@@ -60,6 +60,14 @@ declare module "node:child_process" {
     unref(): void;
     stdin?: { end(data?: string): void } | null;
   };
+  export function spawnSync(
+    command: string,
+    args?: readonly string[],
+    options?: Record<string, unknown>,
+  ): {
+    status: number | null;
+    stdout: string | null;
+  };
 }
 
 declare module "node:fs" {

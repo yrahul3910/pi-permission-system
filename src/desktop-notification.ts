@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 /**
  * Desktop notifications + terminal focus tracking for pi-permission-system.
@@ -159,6 +159,40 @@ function spawnDetached(
     }
 }
 
+let cachedTerminalNotifierPath: string | null | undefined;
+
+/**
+ * Resolves the absolute path to `terminal-notifier` if it is installed, or null.
+ * Result is cached for the process lifetime.
+ *
+ * terminal-notifier is preferred over `osascript` on macOS because osascript
+ * posts notifications as "Script Editor": clicking one launches Script Editor
+ * (which opens a file-picker dialog), and Script Editor must be granted
+ * notification permission. terminal-notifier carries its own notification
+ * identity and a click simply dismisses it.
+ */
+function resolveTerminalNotifierPath(): string | null {
+    if (cachedTerminalNotifierPath !== undefined) {
+        return cachedTerminalNotifierPath;
+    }
+
+    try {
+        const result = spawnSync("command", ["-v", "terminal-notifier"], {
+            shell: true,
+            encoding: "utf-8",
+        });
+        const path =
+            result.status === 0 && typeof result.stdout === "string"
+                ? result.stdout.trim()
+                : "";
+        cachedTerminalNotifierPath = path.length > 0 ? path : null;
+    } catch {
+        cachedTerminalNotifierPath = null;
+    }
+
+    return cachedTerminalNotifierPath;
+}
+
 function escapeForAppleScript(value: string): string {
     return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
@@ -175,6 +209,23 @@ export const sendDesktopNotification: NotificationSender = (title, message) => {
     const platform = process.platform;
 
     if (platform === "darwin") {
+        // Prefer terminal-notifier when available: unlike osascript it does not
+        // hijack clicks into Script Editor's open-file dialog and does not depend
+        // on Script Editor's notification permission.
+        const terminalNotifierPath = resolveTerminalNotifierPath();
+        if (terminalNotifierPath) {
+            spawnDetached(terminalNotifierPath, [
+                "-title",
+                title,
+                "-message",
+                message,
+                // Reactivate the terminal on click instead of opening a file.
+                "-activate",
+                process.env.__CFBundleIdentifier || "com.mitchellh.ghostty",
+            ]);
+            return;
+        }
+
         const script = `display notification "${escapeForAppleScript(message)}" with title "${escapeForAppleScript(title)}"`;
         spawnDetached("osascript", ["-e", script]);
         return;
