@@ -35,23 +35,23 @@ const FOCUS_EVENT_REGEX = /\x1b[\[O]([IO])/g;
 export type NotificationSender = (title: string, message: string) => void;
 
 export interface TerminalFocusTrackerOptions {
-    /** Registers a raw terminal input observer. Return value unsubscribes. */
-    onTerminalInput?: (
-        handler: (
-            data: string,
-        ) => { consume?: boolean; data?: string } | undefined,
-    ) => () => void;
-    /** Writes a raw control sequence to the terminal (defaults to process.stdout). */
-    write?: (data: string) => void;
+  /** Registers a raw terminal input observer. Return value unsubscribes. */
+  onTerminalInput?: (
+    handler: (
+      data: string,
+    ) => { consume?: boolean; data?: string } | undefined,
+  ) => () => void;
+  /** Writes a raw control sequence to the terminal (defaults to process.stdout). */
+  write?: (data: string) => void;
 }
 
 export interface TerminalFocusTracker {
-    /** Whether the terminal tab/window currently has focus. */
-    isFocused(): boolean;
-    /** Whether we have observed at least one real focus event from the terminal. */
-    hasObservedFocusEvents(): boolean;
-    /** Tear down: stop observing input and disable focus reporting. */
-    dispose(): void;
+  /** Whether the terminal tab/window currently has focus. */
+  isFocused(): boolean;
+  /** Whether we have observed at least one real focus event from the terminal. */
+  hasObservedFocusEvents(): boolean;
+  /** Tear down: stop observing input and disable focus reporting. */
+  dispose(): void;
 }
 
 /**
@@ -60,103 +60,103 @@ export interface TerminalFocusTracker {
  * and observes nothing.
  */
 export function startTerminalFocusTracker(
-    options: TerminalFocusTrackerOptions,
+  options: TerminalFocusTrackerOptions,
 ): TerminalFocusTracker {
-    const write =
-        options.write ??
-        ((data: string) => {
-            try {
-                process.stdout.write(data);
-            } catch {
-                // Terminal output is best-effort; ignore write failures.
-            }
-        });
+  const write =
+    options.write ??
+    ((data: string) => {
+      try {
+        process.stdout.write(data);
+      } catch {
+        // Terminal output is best-effort; ignore write failures.
+      }
+    });
 
-    // Default to focused so we never notify until we actually see a focus-out.
-    let focused = true;
-    let observedFocusEvents = false;
-    let unsubscribe: (() => void) | null = null;
-    let disposed = false;
+  // Default to focused so we never notify until we actually see a focus-out.
+  let focused = true;
+  let observedFocusEvents = false;
+  let unsubscribe: (() => void) | null = null;
+  let disposed = false;
 
-    if (typeof options.onTerminalInput === "function") {
-        write(ENABLE_FOCUS_REPORTING);
+  if (typeof options.onTerminalInput === "function") {
+    write(ENABLE_FOCUS_REPORTING);
 
-        unsubscribe = options.onTerminalInput((data) => {
-            if (!data.includes("\x1b")) {
-                return undefined;
-            }
+    unsubscribe = options.onTerminalInput((data) => {
+      if (!data.includes("\x1b")) {
+        return undefined;
+      }
 
-            let sawFocusEvent = false;
-            FOCUS_EVENT_REGEX.lastIndex = 0;
-            let match: RegExpExecArray | null;
-            while ((match = FOCUS_EVENT_REGEX.exec(data)) !== null) {
-                sawFocusEvent = true;
-                observedFocusEvents = true;
-                focused = match[1] === "I";
-            }
+      let sawFocusEvent = false;
+      FOCUS_EVENT_REGEX.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = FOCUS_EVENT_REGEX.exec(data)) !== null) {
+        sawFocusEvent = true;
+        observedFocusEvents = true;
+        focused = match[1] === "I";
+      }
 
-            if (!sawFocusEvent) {
-                return undefined;
-            }
+      if (!sawFocusEvent) {
+        return undefined;
+      }
 
-            // Strip focus events so they never reach the editor. If the chunk was
-            // nothing but focus events, consume it entirely.
-            const stripped = data.replace(FOCUS_EVENT_REGEX, "");
-            if (stripped.length === 0) {
-                return { consume: true };
-            }
+      // Strip focus events so they never reach the editor. If the chunk was
+      // nothing but focus events, consume it entirely.
+      const stripped = data.replace(FOCUS_EVENT_REGEX, "");
+      if (stripped.length === 0) {
+        return { consume: true };
+      }
 
-            return { data: stripped };
-        });
-    }
+      return { data: stripped };
+    });
+  }
 
-    return {
-        isFocused: () => focused,
-        hasObservedFocusEvents: () => observedFocusEvents,
-        dispose: () => {
-            if (disposed) {
-                return;
-            }
-            disposed = true;
-            if (unsubscribe) {
-                try {
-                    unsubscribe();
-                } catch {
-                    // ignore
-                }
-                unsubscribe = null;
-            }
-            write(DISABLE_FOCUS_REPORTING);
-        },
-    };
+  return {
+    isFocused: () => focused,
+    hasObservedFocusEvents: () => observedFocusEvents,
+    dispose: () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      if (unsubscribe) {
+        try {
+          unsubscribe();
+        } catch {
+          // ignore
+        }
+        unsubscribe = null;
+      }
+      write(DISABLE_FOCUS_REPORTING);
+    },
+  };
 }
 
 function spawnDetached(
-    command: string,
-    args: readonly string[],
-    input?: string,
+  command: string,
+  args: readonly string[],
+  input?: string,
 ): void {
-    try {
-        const child = spawn(command, args, {
-            stdio:
-                input === undefined ? "ignore" : ["pipe", "ignore", "ignore"],
-            detached: true,
-            windowsHide: true,
-        });
-        child.on("error", () => {
-            // Notifier binary missing or failed to launch; silently ignore.
-        });
-        if (input !== undefined && child.stdin) {
-            try {
-                child.stdin.end(input);
-            } catch {
-                // ignore
-            }
-        }
-        child.unref();
-    } catch {
-        // Spawning failed (e.g. sandboxed environment); ignore.
+  try {
+    const child = spawn(command, args, {
+      stdio:
+        input === undefined ? "ignore" : ["pipe", "ignore", "ignore"],
+      detached: true,
+      windowsHide: true,
+    });
+    child.on("error", () => {
+      // Notifier binary missing or failed to launch; silently ignore.
+    });
+    if (input !== undefined && child.stdin) {
+      try {
+        child.stdin.end(input);
+      } catch {
+        // ignore
+      }
     }
+    child.unref();
+  } catch {
+    // Spawning failed (e.g. sandboxed environment); ignore.
+  }
 }
 
 let cachedTerminalNotifierPath: string | null | undefined;
@@ -172,33 +172,33 @@ let cachedTerminalNotifierPath: string | null | undefined;
  * identity and a click simply dismisses it.
  */
 function resolveTerminalNotifierPath(): string | null {
-    if (cachedTerminalNotifierPath !== undefined) {
-        return cachedTerminalNotifierPath;
-    }
-
-    try {
-        const result = spawnSync("command", ["-v", "terminal-notifier"], {
-            shell: true,
-            encoding: "utf-8",
-        });
-        const path =
-            result.status === 0 && typeof result.stdout === "string"
-                ? result.stdout.trim()
-                : "";
-        cachedTerminalNotifierPath = path.length > 0 ? path : null;
-    } catch {
-        cachedTerminalNotifierPath = null;
-    }
-
+  if (cachedTerminalNotifierPath !== undefined) {
     return cachedTerminalNotifierPath;
+  }
+
+  try {
+    const result = spawnSync("command", ["-v", "terminal-notifier"], {
+      shell: true,
+      encoding: "utf-8",
+    });
+    const path =
+      result.status === 0 && typeof result.stdout === "string"
+        ? result.stdout.trim()
+        : "";
+    cachedTerminalNotifierPath = path.length > 0 ? path : null;
+  } catch {
+    cachedTerminalNotifierPath = null;
+  }
+
+  return cachedTerminalNotifierPath;
 }
 
 function escapeForAppleScript(value: string): string {
-    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function escapeForPowerShell(value: string): string {
-    return value.replace(/'/g, "''");
+  return value.replace(/'/g, "''");
 }
 
 /**
@@ -206,51 +206,51 @@ function escapeForPowerShell(value: string): string {
  * failures are swallowed so a missing notifier never disrupts the agent.
  */
 export const sendDesktopNotification: NotificationSender = (title, message) => {
-    const platform = process.platform;
+  const platform = process.platform;
 
-    if (platform === "darwin") {
-        // Prefer terminal-notifier when available: unlike osascript it does not
-        // hijack clicks into Script Editor's open-file dialog and does not depend
-        // on Script Editor's notification permission.
-        const terminalNotifierPath = resolveTerminalNotifierPath();
-        if (terminalNotifierPath) {
-            spawnDetached(terminalNotifierPath, [
-                "-title",
-                title,
-                "-message",
-                message,
-                // Reactivate the terminal on click instead of opening a file.
-                "-activate",
-                process.env.__CFBundleIdentifier || "com.mitchellh.ghostty",
-            ]);
-            return;
-        }
-
-        const script = `display notification "${escapeForAppleScript(message)}" with title "${escapeForAppleScript(title)}"`;
-        spawnDetached("osascript", ["-e", script]);
-        return;
+  if (platform === "darwin") {
+    // Prefer terminal-notifier when available: unlike osascript it does not
+    // hijack clicks into Script Editor's open-file dialog and does not depend
+    // on Script Editor's notification permission.
+    const terminalNotifierPath = resolveTerminalNotifierPath();
+    if (terminalNotifierPath) {
+      spawnDetached(terminalNotifierPath, [
+        "-title",
+        title,
+        "-message",
+        message,
+        // Reactivate the terminal on click instead of opening a file.
+        "-activate",
+        process.env.__CFBundleIdentifier || "com.mitchellh.ghostty",
+      ]);
+      return;
     }
 
-    if (platform === "win32") {
-        const script = [
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;",
-            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null;",
-            "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);",
-            "$texts = $template.GetElementsByTagName('text');",
-            `$texts.Item(0).AppendChild($template.CreateTextNode('${escapeForPowerShell(title)}')) > $null;`,
-            `$texts.Item(1).AppendChild($template.CreateTextNode('${escapeForPowerShell(message)}')) > $null;`,
-            "$toast = [Windows.UI.Notifications.ToastNotification]::new($template);",
-            "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('pi').Show($toast);",
-        ].join(" ");
-        spawnDetached("powershell", [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-        ]);
-        return;
-    }
+    const script = `display notification "${escapeForAppleScript(message)}" with title "${escapeForAppleScript(title)}"`;
+    spawnDetached("osascript", ["-e", script]);
+    return;
+  }
 
-    // Linux / BSD: prefer notify-send.
-    spawnDetached("notify-send", ["--app-name=pi", title, message]);
+  if (platform === "win32") {
+    const script = [
+      "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;",
+      "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null;",
+      "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);",
+      "$texts = $template.GetElementsByTagName('text');",
+      `$texts.Item(0).AppendChild($template.CreateTextNode('${escapeForPowerShell(title)}')) > $null;`,
+      `$texts.Item(1).AppendChild($template.CreateTextNode('${escapeForPowerShell(message)}')) > $null;`,
+      "$toast = [Windows.UI.Notifications.ToastNotification]::new($template);",
+      "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('pi').Show($toast);",
+    ].join(" ");
+    spawnDetached("powershell", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      script,
+    ]);
+    return;
+  }
+
+  // Linux / BSD: prefer notify-send.
+  spawnDetached("notify-send", ["--app-name=pi", title, message]);
 };
