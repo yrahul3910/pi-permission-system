@@ -8,6 +8,7 @@
   },
   "tools": {
     "read": "allow",
+    "read:/home/alice/project/generated/*": "allow",
     "write": "deny"
   },
   "bash": {
@@ -22,6 +23,7 @@
   },
   "special": {
     "doom_loop": "deny",
-    "external_directory": "ask"
+    "external_directory": "ask",
+    "external_directory:/home/alice/shared/*": "allow"
   }
 }

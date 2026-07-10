@@ -14,6 +14,7 @@ import {
   DEFAULT_EXTENSION_CONFIG,
   LOGS_DIR_ENV_KEY,
   loadPermissionSystemConfig,
+  normalizePermissionSystemConfig,
   savePermissionSystemConfig,
   type PermissionSystemExtensionConfig,
 } from "../src/extension-config.js";
@@ -30,7 +31,7 @@ import {
   SUBAGENT_ENV_HINT_KEYS,
   SUBAGENT_PARENT_SESSION_ENV_KEY,
 } from "../src/permission-forwarding.js";
-import piPermissionSystemExtension from "../src/index.js";
+import piPermissionSystemExtension, { setExtensionConfig, processForwardedPermissionRequests } from "../src/index.js";
 import {
   getUnsupportedTemperatureReason,
   stripUnsupportedTemperatureFromPayload,
@@ -397,7 +398,14 @@ runTest("Permission-system extension config defaults debug and yolo mode off", (
     assert.equal(existsSync(configPath), true);
 
     const raw = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(raw).sort(), ["debug", "desktopNotifications", "yoloMode"]);
+    assert.deepEqual(Object.keys(raw).sort(), [
+      "debug",
+      "desktopNotifications",
+      "enabled",
+      "forwardedPromptTimeoutSeconds",
+      "yoloMode",
+    ]);
+    assert.equal(raw.enabled, true);
     assert.equal(raw.debug, false);
     assert.equal(raw.yoloMode, false);
     assert.equal(raw.desktopNotifications, true);
@@ -424,9 +432,11 @@ runTest("Permission-system extension config loads debug and yolo mode when expli
     assert.equal(result.created, false);
     assert.equal(result.warning, undefined);
     assert.deepEqual(result.config, {
+      enabled: true,
       debug: true,
       yoloMode: true,
       desktopNotifications: true,
+      forwardedPromptTimeoutSeconds: 30,
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -453,9 +463,11 @@ runTest("Permission-system extension config accepts JSONC comments and trailing 
     assert.equal(result.created, false);
     assert.equal(result.warning, undefined);
     assert.deepEqual(result.config, {
+      enabled: true,
       debug: true,
       yoloMode: true,
       desktopNotifications: true,
+      forwardedPromptTimeoutSeconds: 30,
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -522,6 +534,7 @@ runTest("Permission-system extension config save persists normalized config", ()
         debug: true,
         yoloMode: true,
         desktopNotifications: true,
+        forwardedPromptTimeoutSeconds: 30,
       },
       configPath,
     );
@@ -531,9 +544,11 @@ runTest("Permission-system extension config save persists normalized config", ()
     const result = loadPermissionSystemConfig(configPath);
     assert.equal(result.warning, undefined);
     assert.deepEqual(result.config, {
+      enabled: true,
       debug: true,
       yoloMode: true,
       desktopNotifications: true,
+      forwardedPromptTimeoutSeconds: 30,
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -742,7 +757,49 @@ runTest("Before-agent-start prompt cache invalidates on permission changes while
   }
 });
 
-await runAsyncTest("Permission-system logger writes debug and review entries only when debug is enabled", async () => {
+await runAsyncTest("before_agent_start returns cached sanitized prompts on repeated identical turns", async () => {
+  const harness = createToolCallHarness(
+    {
+      defaultPolicy: { tools: "allow", bash: "ask", mcp: "ask", skills: "deny", special: "allow" },
+      skills: { "allowed-skill": "allow", "blocked-skill": "deny" },
+    },
+    ["read"],
+  );
+  const allowedSkillPath = join(harness.cwd, "skills", "allowed", "SKILL.md");
+  const blockedSkillPath = join(harness.cwd, "skills", "blocked", "SKILL.md");
+  const prompt = [
+    '<active_agent name="orchestrator" mode="direct">',
+    "<available_skills>",
+    "  <skill>",
+    "    <name>allowed-skill</name>",
+    "    <description>Allowed skill</description>",
+    `    <location>${allowedSkillPath}</location>`,
+    "  </skill>",
+    "  <skill>",
+    "    <name>blocked-skill</name>",
+    "    <description>Blocked skill</description>",
+    `    <location>${blockedSkillPath}</location>`,
+    "  </skill>",
+    "</available_skills>",
+  ].join("\n");
+
+  try {
+    const ctx = createMockContext(harness.cwd, harness.prompts);
+    const firstResult = await Promise.resolve(harness.handlers.before_agent_start?.({ systemPrompt: prompt }, ctx)) as Record<string, unknown> | undefined;
+    const secondResult = await Promise.resolve(harness.handlers.before_agent_start?.({ systemPrompt: prompt }, ctx)) as Record<string, unknown> | undefined;
+
+    for (const result of [firstResult, secondResult]) {
+      const systemPrompt = String(result?.systemPrompt ?? "");
+      assert.equal(systemPrompt.includes("allowed-skill"), true, "Allowed skill should remain visible");
+      assert.equal(systemPrompt.includes("blocked-skill"), false, "Blocked skill should stay hidden on every turn");
+      assert.equal(systemPrompt.includes("<available_skills>"), true, "Sanitized skill section should be returned each turn");
+    }
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("Permission-system logger writes review entries without debug and debug entries only when debug is enabled", async () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-logs-"));
   const logsDir = join(baseDir, "logs");
   const debugPath = join(logsDir, "debug.jsonl");
@@ -767,7 +824,11 @@ await runAsyncTest("Permission-system logger writes debug and review entries onl
     assert.equal(initialDebugWarning, undefined);
     assert.equal(disabledReviewWarning, undefined);
     await logger.flush();
-    assert.equal(existsSync(debugPath), false);
+    assert.equal(existsSync(debugPath), true);
+    const disabledReviewContent = readFileSync(debugPath, "utf8");
+    assert.match(disabledReviewContent, /permission_request\.waiting/);
+    assert.match(disabledReviewContent, /"stream":"review"/);
+    assert.doesNotMatch(disabledReviewContent, /debug\.disabled/);
 
     config.debug = true;
     const reviewWarning = logger.review("permission_request.waiting", {
@@ -3448,8 +3509,8 @@ await runAsyncTest("TARGETED SMOKE: agent 'code' with '*': deny blocked from rea
 });
 
 // ---------------------------------------------------------------------------
-// Issue #23 Baseline: Current pattern matching behavior before session/
-// permanent approval features are added.
+// Issue #23 Baseline: Current pattern matching behavior before session
+// approval features are added.
 // ---------------------------------------------------------------------------
 
 runTest("ISSUE23-BASELINE: PermissionManager wildcard star matches zero-or-more", () => {
@@ -3482,6 +3543,177 @@ runTest("ISSUE23-BASELINE: PermissionManager last-match-wins with wildcard patte
     assert.equal(r2.state, "allow");
     assert.equal(r2.matchedPattern, "git status *");
   } finally { cleanup(); }
+});
+
+runTest("Permission-system extension config normalizes forwardedPromptTimeoutSeconds", () => {
+  assert.equal(
+    normalizePermissionSystemConfig({ forwardedPromptTimeoutSeconds: 45 }).forwardedPromptTimeoutSeconds,
+    45,
+  );
+  assert.equal(
+    normalizePermissionSystemConfig({ forwardedPromptTimeoutSeconds: null }).forwardedPromptTimeoutSeconds,
+    null,
+  );
+  assert.equal(
+    normalizePermissionSystemConfig({ forwardedPromptTimeoutSeconds: false }).forwardedPromptTimeoutSeconds,
+    null,
+  );
+  assert.equal(
+    normalizePermissionSystemConfig({}).forwardedPromptTimeoutSeconds,
+    30,
+  );
+  assert.equal(
+    normalizePermissionSystemConfig({ forwardedPromptTimeoutSeconds: 0 }).forwardedPromptTimeoutSeconds,
+    30,
+  );
+  assert.equal(
+    normalizePermissionSystemConfig({ forwardedPromptTimeoutSeconds: -10 }).forwardedPromptTimeoutSeconds,
+    30,
+  );
+  assert.equal(
+    normalizePermissionSystemConfig({ forwardedPromptTimeoutSeconds: "abc" }).forwardedPromptTimeoutSeconds,
+    30,
+  );
+});
+
+await runAsyncTest("Forwarded permission warning is only shown when debug config is true", async () => {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-fwd-debug-"));
+  const sessionId = "test-session";
+  process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] = baseDir;
+
+  const location = createPermissionForwardingLocation(
+    join(baseDir, "sessions", "permission-forwarding"),
+    sessionId,
+  );
+  mkdirSync(location.requestsDir, { recursive: true });
+  mkdirSync(location.responsesDir, { recursive: true });
+
+  const notifications: Array<{ message: string; level: string }> = [];
+
+  try {
+    writeFileSync(
+      join(location.requestsDir, "req-debug-false.json"),
+      JSON.stringify({
+        id: "req-debug-false",
+        responseNonce: "nonce-f",
+        createdAt: Date.now(),
+        requesterSessionId: "sub-session",
+        targetSessionId: sessionId,
+        requesterAgentName: "git",
+        message: "Allow read?",
+      }),
+      "utf8",
+    );
+
+    setExtensionConfig({ debug: false, yoloMode: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 30 });
+    await processForwardedPermissionRequests(
+      createMockContext(baseDir, [], { hasUI: true, notifications }) as never,
+      { preserveLocation: true },
+    );
+
+    const warningNotifications = notifications.filter(
+      (n) => n.level === "warning" && n.message.includes("waiting for permission approval"),
+    );
+    assert.equal(warningNotifications.length, 0, "Should not show warning when debug is false");
+
+    writeFileSync(
+      join(location.requestsDir, "req-debug-true.json"),
+      JSON.stringify({
+        id: "req-debug-true",
+        responseNonce: "nonce-t",
+        createdAt: Date.now(),
+        requesterSessionId: "sub-session",
+        targetSessionId: sessionId,
+        requesterAgentName: "git",
+        message: "Allow read?",
+      }),
+      "utf8",
+    );
+
+    setExtensionConfig({ debug: true, yoloMode: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 30 });
+    await processForwardedPermissionRequests(
+      createMockContext(baseDir, [], { hasUI: true, notifications }) as never,
+      { preserveLocation: true },
+    );
+
+    const warningNotificationsDebug = notifications.filter(
+      (n) => n.level === "warning" && n.message.includes("waiting for permission approval"),
+    );
+    assert.equal(warningNotificationsDebug.length, 1, "Should show exactly one warning when debug is true");
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+    delete process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+  }
+});
+
+await runAsyncTest("Forwarded permission prompt reflects configured timeout", async () => {
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-fwd-timeout-"));
+  const sessionId = "test-session";
+  process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] = baseDir;
+
+  const location = createPermissionForwardingLocation(
+    join(baseDir, "sessions", "permission-forwarding"),
+    sessionId,
+  );
+  mkdirSync(location.requestsDir, { recursive: true });
+  mkdirSync(location.responsesDir, { recursive: true });
+
+  try {
+    const prompts45: string[] = [];
+    writeFileSync(
+      join(location.requestsDir, "req-timeout-45.json"),
+      JSON.stringify({
+        id: "req-timeout-45",
+        responseNonce: "nonce-45",
+        createdAt: Date.now(),
+        requesterSessionId: "sub-session",
+        targetSessionId: sessionId,
+        requesterAgentName: "git",
+        message: "Allow read?",
+      }),
+      "utf8",
+    );
+
+    setExtensionConfig({ debug: false, yoloMode: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 45 });
+    await processForwardedPermissionRequests(
+      createMockContext(baseDir, prompts45, { hasUI: true, selectResponse: "Allow Once" }) as never,
+      { preserveLocation: true },
+    );
+
+    assert.ok(
+      prompts45.some((p) => p.includes("45 seconds")),
+      `Expected prompt to include "45 seconds", got: ${prompts45.join("\n")}`,
+    );
+
+    const promptsUnlimited: string[] = [];
+    writeFileSync(
+      join(location.requestsDir, "req-timeout-unlimited.json"),
+      JSON.stringify({
+        id: "req-timeout-unlimited",
+        responseNonce: "nonce-ul",
+        createdAt: Date.now(),
+        requesterSessionId: "sub-session",
+        targetSessionId: sessionId,
+        requesterAgentName: "git",
+        message: "Allow read?",
+      }),
+      "utf8",
+    );
+
+    setExtensionConfig({ debug: false, yoloMode: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: null });
+    await processForwardedPermissionRequests(
+      createMockContext(baseDir, promptsUnlimited, { hasUI: true, selectResponse: "Allow Once" }) as never,
+      { preserveLocation: true },
+    );
+
+    assert.ok(
+      promptsUnlimited.some((p) => p.includes("indefinitely")),
+      `Expected prompt to include "indefinitely", got: ${promptsUnlimited.join("\n")}`,
+    );
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+    delete process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+  }
 });
 
 console.log("All permission system tests passed.");

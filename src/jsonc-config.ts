@@ -1,6 +1,6 @@
 import { type ParseError as JsoncParseError, parse as parseJsonc, printParseErrorCode } from "jsonc-parser";
 
-function isNodeErrorWithCode(error: unknown, code: string): boolean {
+export function isNodeErrorWithCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
@@ -25,7 +25,7 @@ function formatJsoncParseSummary(input: string, errors: readonly JsoncParseError
 
 export function parseJsoncConfig(input: string, filePath: string, subject = "config"): unknown {
   const errors: JsoncParseError[] = [];
-  const parsed = parseJsonc(input, errors, { allowTrailingComma: true });
+  const parsed: unknown = parseJsonc(input, errors, { allowTrailingComma: true });
 
   if (errors.length > 0) {
     throw new Error(`Failed to parse ${subject} at '${filePath}' (${formatJsoncParseSummary(input, errors)})`);

@@ -1,3 +1,5 @@
+import { getNonEmptyString } from "./common.js";
+
 export type PermissionDecisionState = "approved" | "denied" | "denied_with_reason" | "once" | "always" | "reject";
 
 export type PermissionPromptDecision = {
@@ -30,14 +32,53 @@ const PERMISSION_DECISION_OPTIONS = [
   REJECT_OPTION,
   REJECT_WITH_REASON_OPTION,
 ] as const;
+const PERMISSION_DIALOG_MAX_VISIBLE_LINES = 32;
+const PERMISSION_DIALOG_MAX_VISIBLE_CHARACTERS = 2_200;
 
-export function normalizePermissionDenialReason(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
+function splitPromptLines(value: string): string[] {
+  return value.split(/\r\n|\r|\n/);
+}
+
+function formatPromptCompactionNotice(omittedLines: number, omittedCharacters: number): string {
+  const omittedParts = [
+    omittedLines > 0 ? `${omittedLines} ${omittedLines === 1 ? "line" : "lines"}` : null,
+    omittedCharacters > 0 ? `${omittedCharacters} ${omittedCharacters === 1 ? "character" : "characters"}` : null,
+  ].filter((part): part is string => typeof part === "string");
+  const omittedSummary = omittedParts.length > 0 ? omittedParts.join(" and ") : "content";
+  return `[Permission prompt compacted: omitted ${omittedSummary} to keep the permission dialog usable.]`;
+}
+
+function compactPermissionPromptForSelect(value: string): string {
+  const lines = splitPromptLines(value);
+  if (lines.length <= PERMISSION_DIALOG_MAX_VISIBLE_LINES && value.length <= PERMISSION_DIALOG_MAX_VISIBLE_CHARACTERS) {
+    return value;
   }
 
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  const maxPrefixLines = Math.max(1, PERMISSION_DIALOG_MAX_VISIBLE_LINES - 1);
+  const prefixLines = lines.slice(0, maxPrefixLines);
+  const omittedLines = Math.max(0, lines.length - prefixLines.length);
+  let prefix = prefixLines.join("\n");
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const omittedCharacters = Math.max(0, value.length - prefix.length);
+    const notice = formatPromptCompactionNotice(omittedLines, omittedCharacters);
+    const separatorLength = prefix.trimEnd() ? 1 : 0;
+    const maxPrefixCharacters = Math.max(0, PERMISSION_DIALOG_MAX_VISIBLE_CHARACTERS - notice.length - separatorLength);
+
+    if (prefix.length <= maxPrefixCharacters) {
+      return prefix.trimEnd() ? `${prefix.trimEnd()}\n${notice}` : notice;
+    }
+
+    prefix = prefix.slice(0, maxPrefixCharacters).trimEnd();
+  }
+
+  const omittedCharacters = Math.max(0, value.length - prefix.length);
+  const notice = formatPromptCompactionNotice(omittedLines, omittedCharacters);
+  return prefix.trimEnd() ? `${prefix.trimEnd()}\n${notice}` : notice;
+}
+
+export function normalizePermissionDenialReason(value: unknown): string | undefined {
+  return getNonEmptyString(value) ?? undefined;
 }
 
 export function createDeniedPermissionDecision(
@@ -77,7 +118,7 @@ export async function requestPermissionDecisionFromUi(
     ? { timeout: options.timeoutMs }
     : undefined;
   const selected = await ui.select(
-    `${title}\n${message}`,
+    compactPermissionPromptForSelect(`${title}\n${message}`),
     [...PERMISSION_DECISION_OPTIONS],
     selectOptions,
   );

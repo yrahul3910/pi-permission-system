@@ -10,6 +10,10 @@ The changes were mostly vibed using Opus 4.6. In my brief testing, it worked, bu
 
 Below is the rest of the original README.
 
+Permission enforcement extension for the Pi coding agent that provides centralized, deterministic permission gates for tool, bash, MCP, skill, and special operations.
+
+<img width="1360" height="752" alt="image" src="https://github.com/user-attachments/assets/3e85190a-17fa-4d94-ac8e-efa54337df5d" />
+
 ## Coming from OpenCode?
 
 Yes — this extension was designed so OpenCode-style agent permission policies can be ported into Pi with minimal friction.
@@ -27,6 +31,7 @@ Yes — this extension was designed so OpenCode-style agent permission policies 
 
 - **Agents are still markdown files with YAML frontmatter.**
 - **Wildcard permissions still use last-match-wins ordering.**
+- **Resource-qualified path rules are supported for path-bearing tools.** Use action-scoped `tools` keys like `read:/home/alice/project/generated/*` and scoped special keys like `external_directory:/home/alice/shared/*` when you need OpenCode-style directory rules.
 - **Keep frontmatter simple when porting.** This extension intentionally supports `key: value` scalars and nested maps, not full YAML features like arrays, anchors, or multiline scalars.
 
 ### Minimal Pi agent example
@@ -57,7 +62,7 @@ Your agent instructions go here.
 | Wildcard precedence | Same last-declared-match-wins behavior | High | Broad rules first, specific overrides later. |
 | `bash` permission rules | `permission.bash` | High | Command-pattern gating ports cleanly. |
 | Per-tool permission rules like `read`, `grep`, `list`, `task`, or arbitrary extension tool names | `permission.tools` | Medium-High | Pi groups registered tool names under `tools`, including built-ins and extension tools. |
-| `external_directory` | `permission.special.external_directory` | Medium | Same idea, different location. |
+| `external_directory` | `permission.special.external_directory` or `permission.special.external_directory:<path>/*` | Medium-High | Coarse fallback stays supported; add resource-qualified rules for specific outside-worktree directories. |
 | `doom_loop` | `permission.special.doom_loop` | Medium | Same idea, different location. |
 | `skill` permission rules | `permission.skills` | Medium | Same purpose, but Pi uses a dedicated plural `skills` section. |
 | MCP-related access | `permission.mcp` for proxy targets, `permission.tools` for direct registered tools | Medium | This is the biggest Pi-specific difference: proxy MCP targets and direct tool names are intentionally split. |
@@ -162,7 +167,7 @@ All permissions use one of three states:
 | `deny`  | Blocks the action with an error message     |
 | `ask`   | Prompts the user for confirmation via UI    |
 
-When an `ask` permission prompts, the confirmation UI offers `Allow Once`, `Allow Always`, `Reject`, and `Reject with Reason`. `Allow Once` records an in-memory approval for the current runtime, `Allow Always` persists a matching approval rule for future sessions, and rejected decisions can include an optional reason shown back to the agent.
+When an `ask` permission prompts, the confirmation UI offers `Allow Once`, `Allow Always`, `Reject`, and `Reject with Reason`. `Allow Once` approves only the current request. `Allow Always` records an explicit matching approval for the current session only (in-memory, not persisted to disk), while plain `Reject` and `Reject with Reason` deny only the current request and do not silently become future defaults. YOLO/auto-response approvals also do not create saved approval rules; after YOLO mode is disabled, matching `ask` requests require approval again. A configured `deny` remains a hard boundary and is not relaxed by prior one-shot, auto-response, or saved approvals.
 
 ### Pi Integration Hooks
 
@@ -197,6 +202,7 @@ The extension creates this file automatically when it is missing. It controls ex
 
 ```json
 {
+  "enabled": true,
   "debug": false,
   "yoloMode": false,
   "desktopNotifications": true
@@ -205,6 +211,7 @@ The extension creates this file automatically when it is missing. It controls ex
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `enabled` | `true` | Master switch. When `false`, the extension skips all registrations and startup work (permission hooks, commands, runtime API, forwarding). |
 | `debug` | `false` | Enables verbose diagnostics and permission review entries in `logs/pi-permission-system-debug.jsonl` |
 | `yoloMode` | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled |
 | `desktopNotifications` | `true` | Sends a native desktop notification when a permission prompt is waiting and this terminal tab is not focused |
@@ -255,7 +262,7 @@ errs on the side of notifying.
 
 ### Runtime YOLO Control
 
-Use `/permission-system` to open the settings modal and inspect or change yolo mode interactively.
+Use `/permission-system` to open the settings modal and inspect or change yolo mode interactively. In interactive TUI mode, the settings modal uses Pi's renderer-provided theme and does not require a separate global `initTheme()` call before opening.
 
 Other extensions can toggle yolo mode immediately through the shared runtime API:
 
@@ -392,6 +399,20 @@ Controls tools by registered name pattern. This is the recommended standalone fo
 
 Unknown or absent tools are not required in the config. If another extension is not installed, its tool simply will not be registered at runtime, and this extension will block attempts to call that missing tool before permission checks run. Wildcard `tools` rules apply to direct tools from any extension; no adapter-specific naming is required.
 
+Path-bearing built-ins (`read`, `write`, `edit`, `find`, `grep`, `ls`) can also use action/resource keys in `tools` with normalized absolute paths. Use this when a tool should be allowed or denied only for a specific directory resource:
+
+```jsonc
+{
+  "tools": {
+    "read": "ask",
+    "read:/home/alice/project/generated/*": "allow",
+    "write": "deny"
+  }
+}
+```
+
+Action-scoped resource rules still respect normal permission guardrails: matching uses the same wildcard/last-match behavior as other tool rules, and outside-worktree paths must also satisfy the `special.external_directory` check.
+
 > **Note:** Setting `tools.bash` affects the *default* for bash commands, but `bash` patterns can provide command-level overrides.
 >
 > **Note:** Setting `tools.mcp` controls coarse access to a registered `mcp` proxy tool when one is available. Specific `mcp` rules still override it when a proxy target pattern matches. Direct MCP tools registered by extensions are regular registered tools and should be controlled with `tools` patterns such as `context7_*` or `github_*`.
@@ -487,18 +508,20 @@ Reserved permission checks:
 | Key                  | Description                              |
 |----------------------|------------------------------------------|
 | `doom_loop`          | Controls doom loop detection behavior    |
-| `external_directory` | Enforces ask/allow/deny decisions for path-bearing built-in tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) when they target paths outside the active working directory |
+| `external_directory` | Coarse fallback for ask/allow/deny decisions on path-bearing built-in tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) when they target paths outside the active working directory |
+| `external_directory:<path>/*` | Resource-qualified external-directory rule for a specific normalized outside-worktree directory |
 
 ```jsonc
 {
   "special": {
     "doom_loop": "deny",
-    "external_directory": "ask"
+    "external_directory": "ask",
+    "external_directory:/home/alice/shared/*": "allow"
   }
 }
 ```
 
-`external_directory` is evaluated before the normal tool permission check. For example, `tools.read: "allow"` can permit ordinary reads while `special.external_directory: "ask"` still requires confirmation before reading `../outside.txt` or an absolute path outside `ctx.cwd`. Optional-path search tools (`find`, `grep`, `ls`) skip this check when no `path` is provided because they default to the active working directory.
+`external_directory` is evaluated before the normal tool permission check. For example, `tools.read: "allow"` can permit ordinary reads while `special.external_directory: "ask"` still requires confirmation before reading `../outside.txt` or an absolute path outside `ctx.cwd`. Add `external_directory:<normalized-absolute-directory>/*` when a known outside directory should be allowed or denied without changing the coarse fallback. Optional-path search tools (`find`, `grep`, `ls`) skip this check when no `path` is provided because they default to the active working directory.
 
 ---
 
@@ -690,7 +713,7 @@ npx --yes ajv-cli@5 validate \
 | Per-agent override not applied | Frontmatter parsing issue | Ensure `---` delimiters at file top; keep YAML simple; restart session |
 | Tool blocked as unregistered | Unknown tool name | Use a registered `mcp` tool for server tools: `{ "tool": "server:tool" }` |
 | `/skill:<name>` blocked | Deny policy or confirmation unavailable | Check merged `skills` policy (global/project/agent layers). Active agent context is optional in the main session; `ask` still requires UI or forwarded confirmation. |
-| External file path blocked | `special.external_directory` is `ask` without UI or `deny` | Allow/ask the special permission or keep file tools inside the active working directory. |
+| External file path blocked | `special.external_directory` is `ask` without UI or a matching rule resolves to `deny` | Keep file tools inside the active working directory, set an appropriate coarse fallback, or add a scoped rule such as `external_directory:/home/alice/shared/*`. |
 | Permission prompt is too verbose | Generic extension tool input is large | Built-in file tools are summarized automatically; third-party tools are capped to a bounded one-line JSON preview. |
 
 ---
@@ -703,7 +726,7 @@ Runtime checks require Node.js 24+; the test suite runs through Node.js with tsx
 npm run build              # Run TypeScript type checks
 npm run lint               # Run local static checks
 npm run validate:artifacts # Validate JSON/schema/example artifacts
-npm run test               # Run Node/tsx tests from ./tests
+npm run test               # Run Bun tests from ./tests
 npm run check              # Run static, artifact, and test checks
 ```
 

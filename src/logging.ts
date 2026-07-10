@@ -9,7 +9,7 @@ import {
 
 export function safeJsonStringify(value: unknown): string | undefined {
   const seen = new WeakSet<object>();
-  return JSON.stringify(value, (_key, currentValue) => {
+  return JSON.stringify(value, (_key, currentValue: unknown) => {
     if (currentValue instanceof Error) {
       return {
         name: currentValue.name,
@@ -23,10 +23,11 @@ export function safeJsonStringify(value: unknown): string | undefined {
     }
 
     if (typeof currentValue === "object" && currentValue !== null) {
-      if (seen.has(currentValue)) {
+      const obj = currentValue as object;
+      if (seen.has(obj)) {
         return "[Circular]";
       }
-      seen.add(currentValue);
+      seen.add(obj);
     }
 
     return currentValue;
@@ -95,10 +96,6 @@ export function createPermissionSystemLogger(options: PermissionSystemLoggerOpti
   };
 
   const review = (event: string, details: Record<string, unknown> = {}): string | undefined => {
-    if (!options.getConfig().debug) {
-      return undefined;
-    }
-
     return writeLine("review", event, details);
   };
 

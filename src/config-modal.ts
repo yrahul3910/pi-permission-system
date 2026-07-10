@@ -1,6 +1,7 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, TUI, Theme } from "@earendil-works/pi-coding-agent";
 import type { SettingItem } from "@earendil-works/pi-tui";
 
+import { createPermissionSystemCommandHandler, PERMISSION_SYSTEM_COMMAND_DESCRIPTION } from "./common.js";
 import type { PermissionSystemExtensionConfig } from "./extension-config.js";
 import { ZellijModal, ZellijSettingsModal } from "./zellij-modal.js";
 
@@ -73,7 +74,7 @@ export async function openPermissionSystemSettingsModal(ctx: ExtensionCommandCon
   const overlayOptions = { anchor: "center" as const, width: 82, maxHeight: "85%" as const, margin: 1 };
 
   await ctx.ui.custom<void>(
-    (tui, theme, _keybindings, done) => {
+    (tui: TUI, theme: Theme, _keybindings: unknown, done: (result?: void) => void) => {
       let current = controller.getConfig();
       let settingsModal: ZellijSettingsModal | null = null;
 
@@ -82,7 +83,7 @@ export async function openPermissionSystemSettingsModal(ctx: ExtensionCommandCon
           title: "Permission System Settings",
           description: "Local extension options for debug logging and auto-approval behavior",
           settings: buildSettingItems(current),
-          onChange: (id, newValue) => {
+          onChange: (id: string, newValue: string) => {
             current = applySetting(current, id, newValue);
             controller.setConfig(current, ctx);
             current = controller.getConfig();
@@ -115,13 +116,13 @@ export async function openPermissionSystemSettingsModal(ctx: ExtensionCommandCon
       );
 
       return {
-        render(width: number) {
+        render: (width: number): string[] => {
           return modal.renderModal(width).lines;
         },
-        invalidate() {
+        invalidate: (): void => {
           modal.invalidate();
         },
-        handleInput(data: string) {
+        handleInput: (data: string): void => {
           modal.handleInput(data);
           tui.requestRender();
         },
@@ -133,14 +134,7 @@ export async function openPermissionSystemSettingsModal(ctx: ExtensionCommandCon
 
 export function registerPermissionSystemCommand(pi: ExtensionAPI, controller: PermissionSystemConfigController): void {
   pi.registerCommand("permission-system", {
-    description: "Configure pi-permission-system debug logging and yolo-mode behavior",
-    handler: async (_args, ctx) => {
-      if (!ctx.hasUI) {
-        ctx.ui.notify("/permission-system requires interactive TUI mode.", "warning");
-        return;
-      }
-
-      await openPermissionSystemSettingsModal(ctx, controller);
-    },
+    description: PERMISSION_SYSTEM_COMMAND_DESCRIPTION,
+    handler: createPermissionSystemCommandHandler((ctx) => openPermissionSystemSettingsModal(ctx, controller)),
   });
 }

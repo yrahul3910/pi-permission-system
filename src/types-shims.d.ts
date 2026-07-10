@@ -115,18 +115,43 @@ declare module "node:test" {
 }
 
 declare module "@earendil-works/pi-coding-agent" {
-  export type Theme = any;
+  export interface Theme {
+    fg(color: string, text: string): string;
+    bold(text: string): string;
+    colorizeForeground(color: string, text: string): string;
+  }
+
+  export interface TUI {
+    requestRender(): void;
+  }
+
+  export type ExtensionCustomRenderer = (
+    tui: TUI,
+    theme: Theme,
+    keybindings: unknown,
+    done: (result?: unknown) => void,
+  ) => {
+    render(width: number): string[];
+    invalidate(): void;
+    handleInput(data: string): void;
+  };
 
   export type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
 
   export interface ExtensionUIContext {
-    select(title: string, options: string[], opts?: any): Promise<string | undefined>;
-    confirm(title: string, message: string, opts?: any): Promise<boolean>;
-    input(title: string, placeholder?: string, opts?: any): Promise<string | undefined>;
+    select(title: string, options: string[], opts?: unknown): Promise<string | undefined>;
+    confirm(title: string, message: string, opts?: unknown): Promise<boolean>;
+    input(title: string, placeholder?: string, opts?: unknown): Promise<string | undefined>;
     notify(message: string, type?: "info" | "warning" | "error"): void;
     setStatus(key: string, value: string | undefined): void;
     onTerminalInput?(handler: TerminalInputHandler): () => void;
-    custom<T>(renderer: (...args: any[]) => any, options?: any): Promise<T>;
+    custom<T>(renderer: ExtensionCustomRenderer, options?: unknown): Promise<T>;
+  }
+
+  export interface ReadonlySessionManager {
+    getEntries(): ReadonlyArray<unknown>;
+    getSessionId(): string;
+    getSessionDir(): string | undefined;
   }
 
   export interface ExtensionContext {
@@ -134,18 +159,47 @@ declare module "@earendil-works/pi-coding-agent" {
     hasUI: boolean;
     mode?: "tui" | "rpc" | "json" | "print";
     cwd: string;
-    sessionManager: any;
-    modelRegistry: any;
-    model: any;
+    sessionManager: ReadonlySessionManager;
+    modelRegistry: unknown;
+    model: unknown;
     abort(): Promise<void> | void;
     getSystemPrompt(): string;
   }
 
   export interface ExtensionCommandContext extends ExtensionContext {}
 
+  export interface SessionStartEvent {
+    reason?: "start" | "reload" | string;
+  }
+
+  export interface ResourcesDiscoverEvent {
+    reason?: "discover" | "reload" | string;
+  }
+
+  export interface BeforeAgentStartEvent {
+    systemPrompt: string;
+  }
+
+  export interface InputEvent {
+    text: string;
+  }
+
+  export interface ToolCallEvent {
+    toolCallId: string;
+    input: Record<string, unknown>;
+  }
+
+  export type ExtensionHandler<E, R = void> = (event: E, ctx: ExtensionContext) => Promise<R | void> | R | void;
+
   export interface ExtensionAPI {
+    on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
+    on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent>): void;
+    on(event: "session_shutdown", handler: () => Promise<void> | void): void;
+    on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
+    on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+    on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
     on(event: string, handler: (...args: any[]) => any): void;
-    getAllTools(): any[];
+    getAllTools(): unknown[];
     setActiveTools(toolNames: string[]): void;
     registerProvider?(...args: any[]): void;
     registerCommand(
@@ -161,6 +215,19 @@ declare module "@earendil-works/pi-coding-agent" {
     };
   }
 
+  export interface BeforeAgentStartEventResult {
+    systemPrompt?: string;
+  }
+
+  export interface InputEventResult {
+    action: "continue";
+  }
+
+  export interface ToolCallEventResult {
+    block?: boolean;
+    reason?: string;
+  }
+
   export function getAgentDir(): string;
   export function getSettingsListTheme(...args: any[]): any;
   export function isToolCallEventType(toolName: string, event: unknown): boolean;
@@ -168,8 +235,8 @@ declare module "@earendil-works/pi-coding-agent" {
 
 declare module "@earendil-works/pi-ai" {
   export type Api = string;
-  export type AssistantMessageEventStream = any;
-  export type Context = any;
+  export type AssistantMessageEventStream = AsyncIterable<unknown>;
+  export type Context = Record<string, unknown>;
   export type SimpleStreamOptions = {
     temperature?: number;
     onPayload?: (payload: unknown, model: Model<Api>) => unknown | Promise<unknown | undefined> | undefined;
@@ -182,7 +249,7 @@ declare module "@earendil-works/pi-ai" {
     reasoning: boolean;
     [key: string]: any;
   }
-  export function getApiProvider(api: Api): { streamSimple: (...args: any[]) => AssistantMessageEventStream } | undefined;
+  export function getApiProvider(api: Api): { streamSimple: (...args: unknown[]) => AssistantMessageEventStream } | undefined;
 }
 
 declare module "@earendil-works/pi-tui" {

@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join, normalize, resolve, sep } from "node:path";
 
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { PermissionState } from "./types.js";
 
 export function toRecord(value: unknown): Record<string, unknown> {
@@ -18,6 +19,35 @@ export function getNonEmptyString(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Normalizes an agent-name-like value to a non-empty trimmed string, or null.
+ * Semantically equivalent to {@link getNonEmptyString}; kept as a named alias
+ * for call-site readability where the value represents an agent name.
+ */
+export function normalizeAgentName(value: unknown): string | null {
+  return getNonEmptyString(value);
+}
+
+/**
+ * Normalizes a list of names (trim + drop empty) and returns the first name
+ * for which `matchSingle` returns a non-null match, or null when no name
+ * matches. Shared by wildcard and permission-pattern matching so the
+ * normalize-and-search loop is defined once.
+ */
+export function findFirstMatchForNames<TMatch>(
+  names: readonly string[],
+  matchSingle: (name: string) => TMatch | null,
+): TMatch | null {
+  const normalizedNames = names.map((value) => value.trim()).filter((value) => value.length > 0);
+  for (const name of normalizedNames) {
+    const match = matchSingle(name);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
 }
 
 export function isPermissionState(value: unknown): value is PermissionState {
@@ -43,6 +73,26 @@ export function normalizePathForComparison(pathValue: string, cwd: string): stri
   return process.platform === "win32" ? normalizedAbsolutePath.toLowerCase() : normalizedAbsolutePath;
 }
 
+export function normalizePathResourceForPermission(pathValue: string, cwd: string): string {
+  const normalizedPath = normalizePathForComparison(pathValue, cwd).replaceAll("\\", "/");
+  if (!normalizedPath) {
+    return "";
+  }
+
+  const driveRootMatch = normalizedPath.match(/^([a-z]):\/+$/iu);
+  if (driveRootMatch?.[1]) {
+    return `${driveRootMatch[1].toLowerCase()}:/`;
+  }
+
+  if (/^\/+$/u.test(normalizedPath)) {
+    return "/";
+  }
+
+  return normalizedPath
+    .replace(/^([A-Z]):/u, (_, drive: string) => `${drive.toLowerCase()}:`)
+    .replace(/\/+$/u, "");
+}
+
 export function isPathWithinDirectory(pathValue: string, directory: string): boolean {
   if (!pathValue || !directory) {
     return false;
@@ -57,6 +107,10 @@ export function isPathWithinDirectory(pathValue: string, directory: string): boo
 }
 
 type StackNode = { indent: number; target: Record<string, unknown> };
+
+function isPrototypePollutionKey(key: string): boolean {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
+}
 
 export function parseSimpleYamlMap(input: string): Record<string, unknown> {
   const root: Record<string, unknown> = {};
@@ -75,7 +129,11 @@ export function parseSimpleYamlMap(input: string): Record<string, unknown> {
       continue;
     }
 
-    const key = line.slice(0, separatorIndex).trim().replace(/^['"]|['"]$/g, "");
+    const key = line.slice(0, separatorIndex).trim().replace(/^["']|["']$/g, "");
+    if (isPrototypePollutionKey(key)) {
+      continue;
+    }
+
     const rawValue = line.slice(separatorIndex + 1).trim();
 
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
@@ -102,6 +160,10 @@ export function parseSimpleYamlMap(input: string): Record<string, unknown> {
   return root;
 }
 
+export function normalizeLineEndings(prompt: string): string {
+  return prompt.replace(/\r\n/g, "\n");
+}
+
 export function extractFrontmatter(markdown: string): string {
   const normalized = markdown.replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) {
@@ -114,4 +176,23 @@ export function extractFrontmatter(markdown: string): string {
   }
 
   return normalized.slice(4, end);
+}
+
+export const PERMISSION_SYSTEM_COMMAND_DESCRIPTION = "Configure pi-permission-system debug logging and yolo-mode behavior";
+
+/**
+ * Builds the `/permission-system` command handler shared by the standalone
+ * config-modal registration and the index.ts wiring. Enforces the interactive
+ * TUI requirement once so both registration sites stay in sync.
+ */
+export function createPermissionSystemCommandHandler(
+  openModal: (ctx: ExtensionCommandContext) => Promise<void>,
+): (args: string, ctx: ExtensionCommandContext) => Promise<void> {
+  return async (_args: string, ctx: ExtensionCommandContext) => {
+    if (!ctx.hasUI) {
+      ctx.ui.notify("/permission-system requires interactive TUI mode.", "warning");
+      return;
+    }
+    await openModal(ctx);
+  };
 }

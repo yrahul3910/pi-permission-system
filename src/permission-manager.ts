@@ -1,8 +1,16 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
-import { extractFrontmatter, getNonEmptyString, isPermissionState, parseSimpleYamlMap, toRecord } from "./common.js";
+import {
+  extractFrontmatter,
+  findFirstMatchForNames,
+  getNonEmptyString,
+  isPermissionState,
+  normalizePathResourceForPermission,
+  parseSimpleYamlMap,
+  toRecord,
+} from "./common.js";
 import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.js";
 import { containsShellOperator, splitShellSubcommands } from "./shell-split.js";
 import type {
@@ -378,24 +386,42 @@ function toLayeredPermissionMatch(match: {
   };
 }
 
+function toLayeredMatchFromPattern(
+  pattern: { state: LayeredPermissionState; pattern: string },
+  name: string,
+): LayeredPermissionMatch {
+  return {
+    state: pattern.state.state,
+    matchedPattern: pattern.pattern,
+    matchedName: name,
+  };
+}
+
+function findLatestTrustedPatternMatching(
+  patterns: CompiledPermissionPatterns,
+  isMatch: (pattern: CompiledWildcardPattern<LayeredPermissionState>) => string | null,
+): LayeredPermissionMatch | null {
+  for (let index = patterns.length - 1; index >= 0; index -= 1) {
+    const pattern = patterns[index];
+    if (!pattern.state.trusted) {
+      continue;
+    }
+    const matchedName = isMatch(pattern);
+    if (matchedName !== null) {
+      return toLayeredMatchFromPattern(pattern, matchedName);
+    }
+  }
+
+  return null;
+}
+
 function findLatestTrustedPermissionMatch(
   patterns: CompiledPermissionPatterns,
   name: string,
 ): LayeredPermissionMatch | null {
-  for (let index = patterns.length - 1; index >= 0; index -= 1) {
-    const pattern = patterns[index];
-    if (!pattern.state.trusted || !pattern.regex.test(name)) {
-      continue;
-    }
-
-    return {
-      state: pattern.state.state,
-      matchedPattern: pattern.pattern,
-      matchedName: name,
-    };
-  }
-
-  return null;
+  return findLatestTrustedPatternMatching(patterns, (pattern) =>
+    pattern.regex.test(name) ? name : null,
+  );
 }
 
 const PERMISSION_RESTRICTION_ORDER: Record<PermissionState, number> = {
@@ -435,19 +461,72 @@ function findCompiledPermissionMatchForNames(
   patterns: CompiledPermissionPatterns,
   names: readonly string[],
 ): LayeredPermissionMatch | null {
+  return findFirstMatchForNames(names, (name) => findCompiledPermissionMatch(patterns, name));
+}
+
+function findLatestTrustedPermissionMatchForNames(
+  patterns: CompiledPermissionPatterns,
+  names: readonly string[],
+): LayeredPermissionMatch | null {
+  return findLatestTrustedPatternMatching(patterns, (pattern) => {
+    for (const name of names) {
+      if (pattern.regex.test(name.replaceAll("\\", "/"))) {
+        return name;
+      }
+    }
+    return null;
+  });
+}
+
+function findCompiledPermissionMatchByPatternOrderForNames(
+  patterns: CompiledPermissionPatterns,
+  names: readonly string[],
+): LayeredPermissionMatch | null {
   if (patterns.length === 0) {
     return null;
   }
 
   const normalizedNames = names.map((value) => value.trim()).filter((value) => value.length > 0);
-  for (const name of normalizedNames) {
-    const match = findCompiledPermissionMatch(patterns, name);
-    if (match) {
-      return match;
+  if (normalizedNames.length === 0) {
+    return null;
+  }
+
+  for (let index = patterns.length - 1; index >= 0; index -= 1) {
+    const pattern = patterns[index];
+    for (const name of normalizedNames) {
+      if (!pattern.regex.test(name.replaceAll("\\", "/"))) {
+        continue;
+      }
+
+      if (pattern.state.state !== "deny" && !pattern.state.trusted) {
+        const trustedFloor = findLatestTrustedPermissionMatchForNames(patterns, normalizedNames);
+        if (trustedFloor?.state === "deny") {
+          return trustedFloor;
+        }
+      }
+
+      return toLayeredMatchFromPattern(pattern, name);
     }
   }
 
   return null;
+}
+
+function getPathResourceFromInput(input: unknown): string | null {
+  const record = toRecord(input);
+  const pathValue = getNonEmptyString(record.path) ?? getNonEmptyString(record.file_path);
+  if (!pathValue) {
+    return null;
+  }
+
+  const cwd = getNonEmptyString(record.cwd) ?? process.cwd();
+  const resource = normalizePathResourceForPermission(pathValue, cwd);
+  return resource || null;
+}
+
+function createActionResourceTargets(action: string, input: unknown): string[] {
+  const resource = getPathResourceFromInput(input);
+  return resource ? [`${action}:${resource}`] : [];
 }
 
 function resolveLayeredPermissionValue(
@@ -509,6 +588,21 @@ function getFileStamp(path: string): string {
   } catch {
     return "missing";
   }
+}
+
+function resolveAgentMarkdownPath(dir: string | null, agentName?: string): string | null {
+  if (!dir || !agentName) {
+    return null;
+  }
+
+  const root = resolve(dir);
+  const filePath = resolve(root, `${agentName}.md`);
+  const relativePath = relative(root, filePath);
+  if (relativePath.startsWith("..") || resolve(relativePath) === relativePath) {
+    return null;
+  }
+
+  return filePath;
 }
 
 export class PermissionManager {
@@ -629,11 +723,11 @@ export class PermissionManager {
     cache: Map<string, FileCacheEntry<AgentPermissions>>,
     agentName?: string,
   ): AgentPermissions {
-    if (!dir || !agentName) {
+    const filePath = resolveAgentMarkdownPath(dir, agentName);
+    if (!filePath || !agentName) {
       return {};
     }
 
-    const filePath = join(dir, `${agentName}.md`);
     const stamp = getFileStamp(filePath);
     const cached = cache.get(agentName);
     if (cached?.stamp === stamp) {
@@ -696,10 +790,11 @@ export class PermissionManager {
   }
 
   getPolicyCacheStamp(agentName?: string): string {
-    const agentStamp = agentName ? getFileStamp(join(this.agentsDir, `${agentName}.md`)) : "missing";
+    const agentPath = resolveAgentMarkdownPath(this.agentsDir, agentName);
+    const projectAgentPath = resolveAgentMarkdownPath(this.projectAgentsDir, agentName);
+    const agentStamp = agentPath ? getFileStamp(agentPath) : "missing";
     const projectStamp = this.projectGlobalConfigPath ? getFileStamp(this.projectGlobalConfigPath) : "none";
-    const projectAgentStamp =
-      this.projectAgentsDir && agentName ? getFileStamp(join(this.projectAgentsDir, `${agentName}.md`)) : "none";
+    const projectAgentStamp = projectAgentPath ? getFileStamp(projectAgentPath) : "none";
 
     return `${getFileStamp(this.globalConfigPath)}|${projectStamp}|${agentStamp}|${projectAgentStamp}`;
   }
@@ -827,11 +922,13 @@ export class PermissionManager {
     const toolMatch = findCompiledPermissionMatch(compiledTools, normalizedToolName);
 
     if (SPECIAL_PERMISSION_KEYS.has(normalizedToolName)) {
-      const result = findCompiledPermissionMatch(compiledSpecial, normalizedToolName);
+      const targets = [...createActionResourceTargets(normalizedToolName, input), normalizedToolName];
+      const result = findCompiledPermissionMatchByPatternOrderForNames(compiledSpecial, targets);
       return {
         toolName,
         state: result?.state ?? resolveLayeredDefaultPermission(layers, "special")?.state ?? DEFAULT_POLICY.special,
         matchedPattern: result?.matchedPattern,
+        target: result?.matchedName,
         source: "special",
       };
     }
@@ -969,12 +1066,17 @@ export class PermissionManager {
     }
 
     if (BUILT_IN_TOOL_PERMISSION_NAMES.has(normalizedToolName)) {
+      const result = findCompiledPermissionMatchByPatternOrderForNames(
+        compiledTools,
+        [...createActionResourceTargets(normalizedToolName, input), normalizedToolName],
+      );
       return {
         toolName,
-        state: toolMatch?.state
+        state: result?.state
           ?? resolveLayeredDefaultPermission(layers, "tools")?.state
           ?? DEFAULT_POLICY.tools,
-        matchedPattern: toolMatch?.matchedPattern,
+        matchedPattern: result?.matchedPattern,
+        target: result?.matchedName,
         source: "tool",
       };
     }

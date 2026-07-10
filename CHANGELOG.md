@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0-patch.1] - 2026-07-10
+
 ### Added
 - Added desktop notifications for waiting permission prompts: when a tool call needs approval and this terminal tab is not focused, the extension sends a native OS notification. On macOS it prefers [`terminal-notifier`](https://github.com/julienXX/terminal-notifier) when installed (clean click-to-terminal, no Script Editor permission needed) and falls back to `osascript`; Linux/BSD uses `notify-send`, and Windows uses a PowerShell toast. Controlled by the new `desktopNotifications` config key (default `true`) and the `/permission-system` settings modal.
 - Added terminal focus tracking (DEC private mode `1004`) via `onTerminalInput` so notifications are suppressed while the tab is focused. Focus events are stripped from terminal input so they never leak into the editor. tmux users must set `focus-events on` for accurate off-tab detection (see README); notifications still fire without it.
@@ -21,11 +23,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Fixed `npm run validate:artifacts` (and therefore `npm run check`): it no longer requires a root `config.json` (the fork ships only `config/config.example.json`), and the Bun assertions now match the actual tsx-based workflow.
 
+## [0.8.0] - 2026-07-03
+
+### Changed
+- Extracted shared utilities and consolidated permission matching. ([d1875bd](https://github.com/MasuRii/pi-permission-system/commit/d1875bdd1a26989bdd8cd1193cad9a50622897f6))
+- Preserved non-extension config fields and handled symlinks during config writes. ([acd5c79](https://github.com/MasuRii/pi-permission-system/commit/acd5c79850bfbe00c4511f333b6ea14c6f904178))
+- Narrowed types and consolidated modal rendering. ([d2ea4f8](https://github.com/MasuRii/pi-permission-system/commit/d2ea4f8160975bc2b7e1bdc03464841acbc28ad3))
+- Extracted a shared test harness and added regression tests. ([cd9a253](https://github.com/MasuRii/pi-permission-system/commit/cd9a253beddd6670b70c0ea3e74f234db2c137c4))
+- Updated README with badges, a Ko-fi link, and Bun test instructions. ([7e57c47](https://github.com/MasuRii/pi-permission-system/commit/7e57c47144985da433b6cd1642978026b9cff051))
+- Widened Pi peer dependency compatibility to include `^0.80.0` and added vulnerability overrides (`protobufjs`, `ws`). ([0ed23af](https://github.com/MasuRii/pi-permission-system/commit/0ed23af51e5ca0897c83175b420d07fee8823921))
+
+### Removed
+- Removed `PermanentApprovalStore` and the `pi-permission-system-approvals.json` persistence file. `Allow Always` now records session-only (in-memory) approvals via `SessionApprovalStore`, matching the documented behavior. Cross-session persistent approvals are no longer written to disk. ([a33ac2c](https://github.com/MasuRii/pi-permission-system/commit/a33ac2c5159eacb81b87b673706902cd95a27029))
+
+## [0.7.1] - 2026-06-16
+
+### Added
+- Added resource-qualified path rules for path-bearing built-in tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) using action-scoped `tools` keys such as `read:/home/alice/project/generated/*`.
+- Added resource-qualified `external_directory` rules using `external_directory:<normalized-path>/*` for specific outside-worktree directories.
+
+### Changed
+- Clarified that `Allow Once` approves only the current request, `Allow Always` records an explicit matching approval for the current session only, and plain `Reject` does not become a future default.
+- Clarified that YOLO/auto-response approvals do not create saved approval rules.
+
 ## [0.7.0] - 2026-06-01
 
 ### Added
 - Added `SessionApprovalStore` for in-memory per-session permission approval tracking with `approveAlways`, `approveOnce`, `hasSessionApproval`, and `evaluate` methods.
-- Added `PermanentApprovalStore` for persistent approval rules with atomic file writes and last-match-wins evaluation, stored at `pi-permission-system-approvals.json`.
 - Added `evaluate-permission.ts` module with `evaluatePermission()` function that evaluates tool+command pairs against multiple rulesets with last-match-wins semantics.
 - Added forwarded permission prompt auto-denial timeout (30 seconds) so unanswered forwarded subagent prompts automatically deny instead of blocking indefinitely.
 - Added `Allow Once`/`Allow Always`/`Reject`/`Reject with Reason` permission decision options replacing the previous `Yes`/`No`/`No, provide reason` labels.

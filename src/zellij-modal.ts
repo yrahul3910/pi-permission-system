@@ -1,6 +1,6 @@
 // Vendored from ../zellij-modal/index.ts to keep pi-permission-system standalone.
 // Keep this module in sync when upstream zellij-modal primitives change.
-import { getSettingsListTheme, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	Box,
 	Container,
@@ -444,55 +444,70 @@ export class ZellijModalFrame {
 		};
 	}
 
-	private renderTitleBar(width: number, palette: ZellijColorPalette): string {
+	private renderHorizontalBorder(
+		width: number,
+		palette: ZellijColorPalette,
+		corners: { left: string; right: string },
+		renderInner: (innerWidth: number, borderPaint: (text: string) => string) => string,
+	): string {
 		const innerWidth = Math.max(0, width - 2);
 		const borderColor = this.config.focused ? palette.borderFocused : palette.borderUnfocused;
 		const borderPaint = (text: string) => this.theme.colorizeForeground(borderColor, text);
 
 		if (innerWidth === 0) {
-			return `${borderPaint(this.borders.topLeft)}${borderPaint(this.borders.topRight)}`;
+			return `${borderPaint(corners.left)}${borderPaint(corners.right)}`;
 		}
 
-		const segments = this.positionTitleSegments(innerWidth);
-		let inner = "";
-		let cursor = 0;
+		return `${borderPaint(corners.left)}${renderInner(innerWidth, borderPaint)}${borderPaint(corners.right)}`;
+	}
 
-		for (const segment of segments) {
-			if (segment.start > cursor) {
-				inner += borderPaint(this.borders.horizontal.repeat(segment.start - cursor));
-			}
-			const text = segment.bold ? `\x1b[1m${segment.text}${ANSI_RESET}` : segment.text;
-			inner += this.theme.colorizeForeground(segment.color, text);
-			cursor = segment.end;
-		}
+	private renderTitleBar(width: number, palette: ZellijColorPalette): string {
+		return this.renderHorizontalBorder(
+			width,
+			palette,
+			{ left: this.borders.topLeft, right: this.borders.topRight },
+			(innerWidth, borderPaint) => {
+				const segments = this.positionTitleSegments(innerWidth);
+				let inner = "";
+				let cursor = 0;
 
-		if (cursor < innerWidth) {
-			inner += borderPaint(this.borders.horizontal.repeat(innerWidth - cursor));
-		}
+				for (const segment of segments) {
+					if (segment.start > cursor) {
+						inner += borderPaint(this.borders.horizontal.repeat(segment.start - cursor));
+					}
+					const text = segment.bold ? `\x1b[1m${segment.text}${ANSI_RESET}` : segment.text;
+					inner += this.theme.colorizeForeground(segment.color, text);
+					cursor = segment.end;
+				}
 
-		return `${borderPaint(this.borders.topLeft)}${inner}${borderPaint(this.borders.topRight)}`;
+				if (cursor < innerWidth) {
+					inner += borderPaint(this.borders.horizontal.repeat(innerWidth - cursor));
+				}
+
+				return inner;
+			},
+		);
 	}
 
 	private renderBottomLine(width: number, palette: ZellijColorPalette): string {
-		const innerWidth = Math.max(0, width - 2);
-		const borderColor = this.config.focused ? palette.borderFocused : palette.borderUnfocused;
-		const borderPaint = (text: string) => this.theme.colorizeForeground(borderColor, text);
+		return this.renderHorizontalBorder(
+			width,
+			palette,
+			{ left: this.borders.bottomLeft, right: this.borders.bottomRight },
+			(innerWidth, borderPaint) => {
+				const helpText = this.resolveHelpText(Math.max(0, innerWidth - 3));
+				if (!helpText) {
+					return borderPaint(this.borders.horizontal.repeat(innerWidth));
+				}
 
-		if (innerWidth === 0) {
-			return `${borderPaint(this.borders.bottomLeft)}${borderPaint(this.borders.bottomRight)}`;
-		}
+				const helpSlot = this.config.helpUndertitle?.color ?? "dim";
+				const safeHelp = truncateToWidth(helpText, Math.max(0, innerWidth - 3), "…");
+				const helpWidth = visibleWidth(safeHelp);
+				const rightFill = Math.max(0, innerWidth - helpWidth - 3);
 
-		const helpText = this.resolveHelpText(Math.max(0, innerWidth - 3));
-		if (!helpText) {
-			return `${borderPaint(this.borders.bottomLeft)}${borderPaint(this.borders.horizontal.repeat(innerWidth))}${borderPaint(this.borders.bottomRight)}`;
-		}
-
-		const helpSlot = this.config.helpUndertitle?.color ?? "dim";
-		const safeHelp = truncateToWidth(helpText, Math.max(0, innerWidth - 3), "…");
-		const helpWidth = visibleWidth(safeHelp);
-		const rightFill = Math.max(0, innerWidth - helpWidth - 3);
-
-		return `${borderPaint(this.borders.bottomLeft)}${borderPaint(this.borders.horizontal)} ${this.theme.colorizeForeground(helpSlot, safeHelp)} ${borderPaint(this.borders.horizontal.repeat(rightFill))}${borderPaint(this.borders.bottomRight)}`;
+				return `${borderPaint(this.borders.horizontal)} ${this.theme.colorizeForeground(helpSlot, safeHelp)} ${borderPaint(this.borders.horizontal.repeat(rightFill))}`;
+			},
+		);
 	}
 
 	private positionTitleSegments(innerWidth: number): PositionedTitleSegment[] {
@@ -683,18 +698,14 @@ export class ZellijModal implements ZellijModalComponent {
 			const rawLines = this.content.render(contentWidth);
 			const normalized = rawLines.length > 0 ? rawLines : [""];
 
-			for (let i = 0; i < this.config.padding; i++) {
-				lines.push(" ".repeat(paddedWidth));
-			}
+			pushPaddingLines(lines, this.config.padding, paddedWidth);
 
 			for (const line of normalized) {
 				const fitted = truncateToWidth(line, contentWidth, "", true);
 				lines.push(`${sidePadding}${fitted}${sidePadding}`);
 			}
 
-			for (let i = 0; i < this.config.padding; i++) {
-				lines.push(" ".repeat(paddedWidth));
-			}
+			pushPaddingLines(lines, this.config.padding, paddedWidth);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const safe = truncateToWidth(` Render error: ${message} `, paddedWidth, "…", true);
@@ -782,6 +793,18 @@ export class ZellijModal implements ZellijModalComponent {
 /**
  * Options for the pre-built settings modal content renderer.
  */
+type SettingsListTheme = ConstructorParameters<typeof SettingsList>[2];
+
+function createSettingsListTheme(theme: Theme): SettingsListTheme {
+	return {
+		label: (text: string, selected: boolean) => (selected ? theme.fg("accent", text) : text),
+		value: (text: string, selected: boolean) => (selected ? theme.fg("accent", text) : theme.fg("muted", text)),
+		description: (text: string) => theme.fg("dim", text),
+		cursor: theme.fg("accent", "→ "),
+		hint: (text: string) => theme.fg("dim", text),
+	};
+}
+
 export interface SettingsModalOptions {
 	/** Modal heading. */
 	title: string;
@@ -830,7 +853,7 @@ export class ZellijSettingsModal implements ZellijModalContentRenderer {
 		this.settingsList = new SettingsList(
 			options.settings,
 			Math.min(Math.max(options.settings.length + 2, 6), 18),
-			getSettingsListTheme(),
+			createSettingsListTheme(this.theme),
 			(id: string, value: string) => {
 				this.options.onChange(id, value);
 			},
@@ -935,52 +958,67 @@ function parseAnsiForegroundColor(ansi: string): PaletteColor | null {
 	return null;
 }
 
-function truncateStart(text: string, maxWidth: number): string {
+function pushPaddingLines(lines: string[], padding: number, paddedWidth: number): void {
+	for (let i = 0; i < padding; i++) {
+		lines.push(" ".repeat(paddedWidth));
+	}
+}
+
+function withTruncateEarlyExit(
+	text: string,
+	maxWidth: number,
+	buildResult: () => string,
+): string {
 	if (visibleWidth(text) <= maxWidth) {
 		return text;
 	}
 	if (maxWidth <= 1) {
 		return "…".slice(0, maxWidth);
 	}
+	return buildResult();
+}
+
+function buildTrailingSuffix(
+	text: string,
+	initial: string,
+	step: (candidate: string, acc: string) => { value: string; stop: boolean },
+): string {
 	const chars = Array.from(text);
-	let current = "";
+	let acc = initial;
 	for (let index = chars.length - 1; index >= 0; index--) {
-		const candidate = `${chars[index]}${current}`;
-		if (visibleWidth(candidate) >= maxWidth - 1) {
-			current = candidate;
+		const result = step(`${chars[index]}${acc}`, acc);
+		acc = result.value;
+		if (result.stop) {
 			break;
 		}
-		current = candidate;
 	}
-	return `…${truncateToWidth(current, Math.max(0, maxWidth - 1), "")}`;
+	return acc;
+}
+
+function truncateStart(text: string, maxWidth: number): string {
+	return withTruncateEarlyExit(text, maxWidth, () => {
+		const current = buildTrailingSuffix(text, "", (candidate) => ({
+			value: candidate,
+			stop: visibleWidth(candidate) >= maxWidth - 1,
+		}));
+		return `…${truncateToWidth(current, Math.max(0, maxWidth - 1), "")}`;
+	});
 }
 
 function truncateMiddle(text: string, maxWidth: number): string {
-	if (visibleWidth(text) <= maxWidth) {
-		return text;
-	}
-	if (maxWidth <= 1) {
-		return "…".slice(0, maxWidth);
-	}
+	return withTruncateEarlyExit(text, maxWidth, () => {
+		const headTarget = Math.floor((maxWidth - 1) / 2);
+		const tailTarget = Math.max(0, maxWidth - 1 - headTarget);
+		const head = truncateToWidth(text, headTarget, "");
 
-	const headTarget = Math.floor((maxWidth - 1) / 2);
-	const tailTarget = Math.max(0, maxWidth - 1 - headTarget);
-	const head = truncateToWidth(text, headTarget, "");
+		const tail = buildTrailingSuffix(text, "", (candidate, acc) =>
+			visibleWidth(candidate) > tailTarget
+				? { value: acc, stop: false }
+				: { value: candidate, stop: visibleWidth(candidate) === tailTarget },
+		);
 
-	const chars = Array.from(text);
-	let tail = "";
-	for (let index = chars.length - 1; index >= 0; index--) {
-		const candidate = `${chars[index]}${tail}`;
-		if (visibleWidth(candidate) > tailTarget) {
-			continue;
-		}
-		tail = candidate;
-		if (visibleWidth(tail) === tailTarget) {
-			break;
-		}
-	}
-
-	return `${head}…${tail}`;
+		return `${head}…${tail}`;
+	});
 }
 
 function clampInt(value: number, min: number, max: number): number {

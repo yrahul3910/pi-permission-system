@@ -1,3 +1,5 @@
+import { normalizeLineEndings } from "./common.js";
+
 export interface SanitizeSystemPromptResult {
   prompt: string;
   removed: boolean;
@@ -56,10 +58,6 @@ const TOOL_GUIDELINE_RULES: readonly GuidelineRule[] = [
     shouldKeep: (allowedTools) => allowedTools.has("mcp"),
   },
 ];
-
-function normalizePrompt(prompt: string): string {
-  return (prompt || "").replace(/\r\n/g, "\n");
-}
 
 function collapseExtraBlankLines(text: string): string {
   return text.replace(/\n{3,}/g, "\n\n").trimEnd();
@@ -156,7 +154,7 @@ export function sanitizeAvailableToolsSection(
   allowedToolNames: readonly string[],
 ): SanitizeSystemPromptResult {
   const allowedTools = new Set(allowedToolNames.map((toolName) => toolName.trim()).filter(Boolean));
-  const normalizedLines = normalizePrompt(systemPrompt).split("\n");
+  const normalizedLines = normalizeLineEndings(systemPrompt).split("\n");
   const removedToolsSection = removeLineSection(normalizedLines, findSection(normalizedLines, AVAILABLE_TOOLS_SECTION_HEADER));
   const sanitizedGuidelines = sanitizeGuidelinesSection(removedToolsSection.lines, allowedTools);
   const removed = removedToolsSection.removed || sanitizedGuidelines.removed;

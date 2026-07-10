@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import { getNonEmptyString, normalizeAgentName } from "./common.js";
 import type { PermissionDecisionState } from "./permission-dialog.js";
 
 export const PERMISSION_FORWARDING_POLL_INTERVAL_MS = 2_000;
@@ -46,11 +47,7 @@ export type PermissionForwardingLocation = {
 };
 
 export function normalizePermissionForwardingSessionId(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
+  const trimmed = getNonEmptyString(value);
   if (!trimmed || trimmed.toLowerCase() === "unknown") {
     return null;
   }
@@ -62,32 +59,23 @@ function encodeSessionIdForPath(sessionId: string): string {
   return encodeURIComponent(sessionId);
 }
 
-function normalizePermissionForwardingAgentDir(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
 export function resolvePermissionForwardingRootDir(options: {
   defaultAgentDir: string;
   isSubagent: boolean;
   env?: NodeJS.ProcessEnv;
 }): string {
   const env = options.env ?? process.env;
-  const explicitAgentDir = normalizePermissionForwardingAgentDir(
+  const explicitAgentDir = normalizeAgentName(
     env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY],
   );
   const delegatedRuntimeAgentDir = options.isSubagent
-    ? normalizePermissionForwardingAgentDir(env[PI_DELEGATED_AUTH_RUNTIME_DIR_ENV_KEY])
+    ? normalizeAgentName(env[PI_DELEGATED_AUTH_RUNTIME_DIR_ENV_KEY])
     : null;
   const routerSharedAgentDir = options.isSubagent
-    ? normalizePermissionForwardingAgentDir(env[PI_AGENT_ROUTER_SHARED_AGENT_DIR_ENV_KEY])
+    ? normalizeAgentName(env[PI_AGENT_ROUTER_SHARED_AGENT_DIR_ENV_KEY])
     : null;
   const policyAgentDir = options.isSubagent
-    ? normalizePermissionForwardingAgentDir(env[PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR_ENV_KEY])
+    ? normalizeAgentName(env[PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR_ENV_KEY])
     : null;
 
   // Router-launched subagents run with an isolated PI_CODING_AGENT_DIR, so

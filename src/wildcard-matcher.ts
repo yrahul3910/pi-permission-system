@@ -1,3 +1,5 @@
+import { findFirstMatchForNames } from "./common.js";
+
 export type CompiledWildcardPattern<TState> = {
   pattern: string;
   state: TState;
@@ -10,7 +12,19 @@ export type WildcardPatternMatch<TState> = {
   matchedName: string;
 };
 
+/** Maximum length for a wildcard permission pattern. Bounds regex compilation work and blocks oversized config values from causing slow regex evaluation. */
+const MAX_WILDCARD_PATTERN_LENGTH = 500;
+
+const NEVER_MATCH_PATTERN = /$^/;
+
 export function compileWildcardPattern<TState>(pattern: string, state: TState): CompiledWildcardPattern<TState> {
+  if (pattern.length > MAX_WILDCARD_PATTERN_LENGTH) {
+    return {
+      pattern,
+      state,
+      regex: NEVER_MATCH_PATTERN,
+    };
+  }
   let escaped = pattern
     .replaceAll("\\", "/")
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
@@ -24,7 +38,7 @@ export function compileWildcardPattern<TState>(pattern: string, state: TState): 
   return {
     pattern,
     state,
-    regex: new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s"),
+    regex: new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s"), // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp — pattern is a config-provided wildcard that is length-bounded (<=MAX_WILDCARD_PATTERN_LENGTH) and escaped (only `*`/`?` become `.*`/`.`); no user input reaches the regex engine.
   };
 }
 
@@ -63,17 +77,5 @@ export function findCompiledWildcardMatchForNames<TState>(
   patterns: readonly CompiledWildcardPattern<TState>[],
   names: readonly string[],
 ): WildcardPatternMatch<TState> | null {
-  const normalizedNames = names.map((value) => value.trim()).filter((value) => value.length > 0);
-  if (normalizedNames.length === 0) {
-    return null;
-  }
-
-  for (const name of normalizedNames) {
-    const match = findCompiledWildcardMatch(patterns, name);
-    if (match) {
-      return match;
-    }
-  }
-
-  return null;
+  return findFirstMatchForNames(names, (name) => findCompiledWildcardMatch(patterns, name));
 }
