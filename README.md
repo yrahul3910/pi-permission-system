@@ -198,7 +198,8 @@ The extension creates this file automatically when it is missing. It controls ex
 ```json
 {
   "debug": false,
-  "yoloMode": false
+  "yoloMode": false,
+  "desktopNotifications": true
 }
 ```
 
@@ -206,8 +207,42 @@ The extension creates this file automatically when it is missing. It controls ex
 |-----|---------|-------------|
 | `debug` | `false` | Enables verbose diagnostics and permission review entries in `logs/pi-permission-system-debug.jsonl` |
 | `yoloMode` | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled |
+| `desktopNotifications` | `true` | Sends a native desktop notification when a permission prompt is waiting and this terminal tab is not focused |
 
 Debug output writes only under the extension directory by default. Set `PI_PERMISSION_SYSTEM_LOGS_DIR` to redirect the debug file to a specific directory. No debug output is printed to the terminal.
+
+### Desktop Notifications
+
+When a tool call needs approval, the extension can pop a native desktop
+notification so you are not left waiting on a tab you are not looking at.
+Toggle it from the `/permission-system` settings modal or the `desktopNotifications`
+config key.
+
+Notifications are delivered with the platform-native notifier and therefore do
+not depend on your terminal or multiplexer:
+
+- **macOS** — `osascript` (Notification Center)
+- **Linux/BSD** — `notify-send` (install `libnotify` if missing)
+- **Windows** — PowerShell toast notification
+
+**Focus detection.** To avoid notifying you when you *are* looking at the tab,
+the extension enables terminal focus reporting (DEC private mode `1004`) and
+watches for focus-in/out events. It only suppresses a notification once it has
+positively observed that the tab is focused; if focus events never arrive, it
+errs on the side of notifying.
+
+> **tmux users (e.g. tmux inside Ghostty):** tmux only forwards focus events to
+> pi when focus reporting is enabled in your tmux config. Add this to
+> `~/.tmux.conf`:
+>
+> ```tmux
+> set -g focus-events on
+> ```
+>
+> Ghostty supports focus reporting natively, so with that option set the full
+> chain (Ghostty -> tmux -> pi) works and off-tab detection is accurate. Without
+> it, tmux swallows the focus events and the extension will notify on every
+> waiting prompt regardless of which pane/window is active.
 
 ### Runtime YOLO Control
 

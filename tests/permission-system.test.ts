@@ -397,9 +397,10 @@ runTest("Permission-system extension config defaults debug and yolo mode off", (
     assert.equal(existsSync(configPath), true);
 
     const raw = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(raw).sort(), ["debug", "yoloMode"]);
+    assert.deepEqual(Object.keys(raw).sort(), ["debug", "desktopNotifications", "yoloMode"]);
     assert.equal(raw.debug, false);
     assert.equal(raw.yoloMode, false);
+    assert.equal(raw.desktopNotifications, true);
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
   }
@@ -425,6 +426,7 @@ runTest("Permission-system extension config loads debug and yolo mode when expli
     assert.deepEqual(result.config, {
       debug: true,
       yoloMode: true,
+      desktopNotifications: true,
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -453,6 +455,7 @@ runTest("Permission-system extension config accepts JSONC comments and trailing 
     assert.deepEqual(result.config, {
       debug: true,
       yoloMode: true,
+      desktopNotifications: true,
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -518,6 +521,7 @@ runTest("Permission-system extension config save persists normalized config", ()
       {
         debug: true,
         yoloMode: true,
+        desktopNotifications: true,
       },
       configPath,
     );
@@ -529,6 +533,7 @@ runTest("Permission-system extension config save persists normalized config", ()
     assert.deepEqual(result.config, {
       debug: true,
       yoloMode: true,
+      desktopNotifications: true,
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });

@@ -10,6 +10,7 @@ export const EXTENSION_ID = "pi-permission-system";
 export interface PermissionSystemExtensionConfig {
   debug: boolean;
   yoloMode: boolean;
+  desktopNotifications: boolean;
 }
 
 export interface PermissionSystemConfigLoadResult {
@@ -26,6 +27,7 @@ export interface PermissionSystemConfigSaveResult {
 export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debug: false,
   yoloMode: false,
+  desktopNotifications: true,
 };
 
 export function resolveExtensionRoot(moduleUrl = import.meta.url): string {
@@ -56,6 +58,7 @@ export function cloneDefaultConfig(): PermissionSystemExtensionConfig {
   return {
     debug: DEFAULT_EXTENSION_CONFIG.debug,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
+    desktopNotifications: DEFAULT_EXTENSION_CONFIG.desktopNotifications,
   };
 }
 
@@ -68,6 +71,8 @@ export function normalizePermissionSystemConfig(raw: unknown): PermissionSystemE
   return {
     debug: record.debug === true,
     yoloMode: record.yoloMode === true,
+    // Defaults to enabled; only an explicit `false` turns it off.
+    desktopNotifications: record.desktopNotifications !== false,
   };
 }
 

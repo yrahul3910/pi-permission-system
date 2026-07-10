@@ -22,7 +22,7 @@
     "build": "npm run typecheck",
     "lint": "npm run typecheck",
     "validate:artifacts": "node ./scripts/validate-artifacts.mjs",
-    "test": "npx --yes tsx ./tests/permission-system.test.ts && npx --yes tsx ./tests/config-modal.test.ts",
+    "test": "npx --yes tsx ./tests/permission-system.test.ts && npx --yes tsx ./tests/config-modal.test.ts && npx --yes tsx ./tests/desktop-notification.test.ts",
     "check": "npm run lint && npm run validate:artifacts && npm run test"
   },
   "keywords": [

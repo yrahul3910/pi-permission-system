@@ -3,12 +3,17 @@ declare namespace NodeJS {
     [key: string]: string | undefined;
   }
 
+  interface WriteStream {
+    write(chunk: string): boolean;
+  }
+
   interface Process {
     env: ProcessEnv;
     platform: string;
     pid: number;
     exitCode?: number;
     cwd(): string;
+    stdout: WriteStream;
   }
 
   type Timeout = number;
@@ -42,6 +47,18 @@ declare module "node:assert/strict" {
 declare module "node:crypto" {
   export function createHash(algorithm: string): {
     update(value: string): { digest(encoding: string): string };
+  };
+}
+
+declare module "node:child_process" {
+  export function spawn(
+    command: string,
+    args?: readonly string[],
+    options?: Record<string, unknown>,
+  ): {
+    on(event: "error", listener: (error: unknown) => void): void;
+    unref(): void;
+    stdin?: { end(data?: string): void } | null;
   };
 }
 
@@ -92,18 +109,22 @@ declare module "node:test" {
 declare module "@earendil-works/pi-coding-agent" {
   export type Theme = any;
 
+  export type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
+
   export interface ExtensionUIContext {
     select(title: string, options: string[], opts?: any): Promise<string | undefined>;
     confirm(title: string, message: string, opts?: any): Promise<boolean>;
     input(title: string, placeholder?: string, opts?: any): Promise<string | undefined>;
     notify(message: string, type?: "info" | "warning" | "error"): void;
     setStatus(key: string, value: string | undefined): void;
+    onTerminalInput?(handler: TerminalInputHandler): () => void;
     custom<T>(renderer: (...args: any[]) => any, options?: any): Promise<T>;
   }
 
   export interface ExtensionContext {
     ui: ExtensionUIContext;
     hasUI: boolean;
+    mode?: "tui" | "rpc" | "json" | "print";
     cwd: string;
     sessionManager: any;
     modelRegistry: any;

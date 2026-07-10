@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added desktop notifications for waiting permission prompts: when a tool call needs approval and this terminal tab is not focused, the extension sends a native OS notification (`osascript` on macOS, `notify-send` on Linux/BSD, PowerShell toast on Windows). Controlled by the new `desktopNotifications` config key (default `true`) and the `/permission-system` settings modal.
+- Added terminal focus tracking (DEC private mode `1004`) via `onTerminalInput` so notifications are suppressed while the tab is focused. Focus events are stripped from terminal input so they never leak into the editor. tmux users must set `focus-events on` for accurate off-tab detection (see README); notifications still fire without it.
+- Added a `tests/desktop-notification.test.ts` suite covering focus-event parsing, input stripping, and teardown.
 - Added a GitHub Actions CI workflow that runs `npm run check` (typecheck, artifact validation, and the tsx test suite) on pushes to `main` and on pull requests.
 
 ### Changed

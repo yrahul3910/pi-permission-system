@@ -36,6 +36,13 @@ function buildSettingItems(config: PermissionSystemExtensionConfig): SettingItem
       currentValue: toOnOff(config.yoloMode),
       values: ON_OFF,
     },
+    {
+      id: "desktopNotifications",
+      label: "Desktop notifications",
+      description: "Send a desktop notification when a permission prompt is waiting and this tab is not focused",
+      currentValue: toOnOff(config.desktopNotifications),
+      values: ON_OFF,
+    },
   ];
 }
 
@@ -49,6 +56,8 @@ function applySetting(
       return { ...config, debug: value === "on" };
     case "yoloMode":
       return { ...config, yoloMode: value === "on" };
+    case "desktopNotifications":
+      return { ...config, desktopNotifications: value === "on" };
     default:
       return config;
   }
@@ -57,6 +66,7 @@ function applySetting(
 function syncSettingValues(settingsList: SettingValueSyncTarget, config: PermissionSystemExtensionConfig): void {
   settingsList.updateValue("debug", toOnOff(config.debug));
   settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
+  settingsList.updateValue("desktopNotifications", toOnOff(config.desktopNotifications));
 }
 
 export async function openPermissionSystemSettingsModal(ctx: ExtensionCommandContext, controller: PermissionSystemConfigController): Promise<void> {
