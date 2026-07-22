@@ -15,6 +15,11 @@
     "git status": "allow",
     "git *": "ask"
   },
+  "bashSafety": {
+    "complexSyntax": "ask",
+    "redirections": "ask",
+    "riskyOptions": "ask"
+  },
   "mcp": {
     "mcp_status": "allow"
   },

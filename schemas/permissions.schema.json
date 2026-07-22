@@ -37,6 +37,25 @@
     "bash": {
       "$ref": "#/$defs/permissionMap"
     },
+    "bashSafety": {
+      "description": "Bash safety gate policy. Applied after ordinary bash pattern matching and session approvals with restrictive precedence (deny > ask > allow), so broad allow rules such as `rg *` do not silently authorize shell execution, writes, or ambiguous syntax. Omitting this object (or any category) keeps that category at `allow`, preserving pre-gate behavior.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "complexSyntax": {
+          "description": "Command/process substitution, pipes, `&&`/`||`/`;`/`&`, unquoted newlines separating commands, subshell parentheses, and malformed or unanalyzable syntax (fails closed).",
+          "$ref": "#/$defs/permissionState"
+        },
+        "redirections": {
+          "description": "Redirection operators such as `>`, `>>`, `<`, `<<`, `<<<`, `2>`, `>&`, `<&`, `&>`, `&>>`.",
+          "$ref": "#/$defs/permissionState"
+        },
+        "riskyOptions": {
+          "description": "Options of otherwise-safe tools that execute commands or write files: `rg --pre`, `fd --exec`/`--exec-batch`/`-x`/`-X`, `sed -i`/`--in-place` and `s///e` execution expressions, `git --ext-diff`.",
+          "$ref": "#/$defs/permissionState"
+        }
+      }
+    },
     "mcp": {
       "description": "Pattern-based permissions for targets invoked through a registered `mcp` tool when available.",
       "$ref": "#/$defs/permissionMap"

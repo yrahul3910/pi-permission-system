@@ -1,6 +1,6 @@
 import { getNonEmptyString, toRecord } from "./common.js";
 import { safeJsonStringify } from "./logging.js";
-import type { PermissionCheckResult } from "./types.js";
+import type { BashSafetyAssessment, PermissionCheckResult } from "./types.js";
 import type { SkillPromptEntry } from "./skill-prompt-sanitizer.js";
 
 const STRUCTURED_EDIT_OPERATION_NAMES = new Set(["replace", "append", "prepend", "delete", "replace_text"]);
@@ -45,6 +45,26 @@ export function formatUnknownToolReason(toolName: string, availableToolNames: re
   return `Tool '${toolName}' is not registered in this runtime and was blocked before permission checks.${mcpHint} Registered tools: ${availableList}.`;
 }
 
+const BASH_SAFETY_NOTICE_MAX_DETAILS = 3;
+
+/**
+ * Human-readable summary of why the bash safety gate restricted a command.
+ * Returns null when the gate did not restrict the command (no findings, or the
+ * configured requirement resolved to "allow").
+ */
+export function formatBashSafetyNotice(safety: BashSafetyAssessment | undefined): string | null {
+  if (!safety || safety.state === "allow" || safety.findings.length === 0) {
+    return null;
+  }
+
+  const details = safety.findings
+    .slice(0, BASH_SAFETY_NOTICE_MAX_DETAILS)
+    .map((finding) => finding.detail);
+  const omitted = safety.findings.length - details.length;
+  const omittedSuffix = omitted > 0 ? `; +${omitted} more` : "";
+  return `Bash safety gate [${safety.categories.join(", ")}]: ${details.join("; ")}${omittedSuffix}.`;
+}
+
 function formatPermissionHardStopHint(result: PermissionCheckResult): string {
   if ((result.source === "mcp" || result.toolName === "mcp") && result.target) {
     return "Hard stop: this MCP permission denial is policy-enforced. Do not retry this target, do not run discovery/investigation to bypass it, and report the block to the user.";
@@ -74,7 +94,12 @@ export function formatDenyReason(result: PermissionCheckResult, agentName?: stri
     parts.push(`(matched '${result.matchedPattern}')`);
   }
 
-  return `${parts.join(" ")}. ${formatPermissionHardStopHint(result)}`;
+  const safetyNotice = result.toolName === "bash" && result.safety?.state === "deny"
+    ? formatBashSafetyNotice(result.safety)
+    : null;
+  const safetySuffix = safetyNotice ? ` ${safetyNotice}` : "";
+
+  return `${parts.join(" ")}.${safetySuffix} ${formatPermissionHardStopHint(result)}`;
 }
 
 export function formatUserDeniedReason(result: PermissionCheckResult, denialReason?: string): string {
@@ -271,7 +296,9 @@ export function formatAskPrompt(result: PermissionCheckResult, agentName?: strin
 
   if (result.toolName === "bash") {
     const patternInfo = result.matchedPattern ? ` (matched '${result.matchedPattern}')` : "";
-    return `${subject} requested bash command '${result.command || ""}'${patternInfo}. Allow this command?`;
+    const safetyNotice = formatBashSafetyNotice(result.safety);
+    const safetyInfo = safetyNotice ? ` ${safetyNotice}` : "";
+    return `${subject} requested bash command '${result.command || ""}'${patternInfo}.${safetyInfo} Allow this command?`;
   }
 
   if ((result.source === "mcp" || result.toolName === "mcp") && result.target) {
