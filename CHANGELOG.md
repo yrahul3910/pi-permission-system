@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed the `persist` option from the runtime yolo API (`setYoloMode`/`toggleYoloMode`): yolo mode is session-scoped and never persisted, so the option no longer exists. Results still report `persisted`, which is now always `false`.
 
+### Fixed
+- The `/permission-system` settings modal now applies the in-memory config even when persisting the synced fields fails (for example, when `config.json` is corrupt and the save is refused), so a session-local yolo toggle is no longer silently dropped by an unrelated disk-write error. The error notification is still shown, and the synced-field change then applies to the current session only.
+
 ## [0.8.0-patch.1] - 2026-07-10
 
 ### Added

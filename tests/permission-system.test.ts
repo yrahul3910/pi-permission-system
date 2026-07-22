@@ -115,15 +115,22 @@ type AppendedEntry = {
   data: unknown;
 };
 
+type RegisteredCommandDefinition = {
+  description: string;
+  handler: (args: string, ctx: Record<string, unknown>) => Promise<void> | void;
+};
+
 type ExtensionHarness = {
   baseDir: string;
   cwd: string;
   handlers: Record<string, MockHandler>;
   registeredEvents: string[];
+  registeredCommands: Map<string, RegisteredCommandDefinition>;
   entryRendererTypes: string[];
   appendedEntries: AppendedEntry[];
   prompts: string[];
   debugPath: string;
+  extensionConfigPath: string;
   cleanup: () => Promise<void>;
 };
 
@@ -188,6 +195,7 @@ function createToolCallHarness(
   const prompts: string[] = [];
   const handlers: Record<string, MockHandler> = {};
   const registeredEvents: string[] = [];
+  const registeredCommands = new Map<string, RegisteredCommandDefinition>();
   const entryRendererTypes: string[] = [];
   const appendedEntries: AppendedEntry[] = [];
   const extensionConfigPath = join(baseDir, "extension-config.json");
@@ -215,7 +223,9 @@ function createToolCallHarness(
         registeredEvents.push(name);
         handlers[name] = handler;
       },
-      registerCommand: (): void => {},
+      registerCommand: (name: string, definition: RegisteredCommandDefinition): void => {
+        registeredCommands.set(name, definition);
+      },
       registerEntryRenderer: (customType: string): void => {
         entryRendererTypes.push(customType);
       },
@@ -242,10 +252,12 @@ function createToolCallHarness(
     cwd,
     handlers,
     registeredEvents,
+    registeredCommands,
     entryRendererTypes,
     appendedEntries,
     prompts,
     debugPath,
+    extensionConfigPath,
     cleanup: async (): Promise<void> => {
       await Promise.resolve(handlers.session_shutdown?.({}, createMockContext(cwd, prompts, options)));
       if (originalConfigPath === undefined) {
@@ -439,6 +451,103 @@ await runAsyncTest("Extension exposes a runtime YOLO API for other extensions", 
     const disabledStatus = statusUpdates.at(-1);
     assert.equal(disabledStatus?.key, "pi-permission-system");
     assert.equal(disabledStatus?.value, undefined);
+  } finally {
+    await harness.cleanup();
+  }
+
+  assert.equal((globalThis as GlobalWithPermissionSystem).__piPermissionSystem, undefined);
+});
+
+function createModalTestTheme(): Record<string, unknown> {
+  return {
+    fg: (_color: string, text: string) => text,
+    bg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    underline: (text: string) => text,
+    inverse: (text: string) => text,
+    strikethrough: (text: string) => text,
+    getFgAnsi: (_color: string) => "\x1b[38;5;255m",
+    getBgAnsi: (_color: string) => "\x1b[48;5;16m",
+  };
+}
+
+await runAsyncTest("Modal yolo toggle applies in-session even when persisting synced fields fails", async () => {
+  const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
+  const notifications: Array<{ message: string; level: string }> = [];
+  const harness = createToolCallHarness(
+    { defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" } },
+    [],
+    { hasUI: true, statusUpdates },
+  );
+
+  type CustomComponent = {
+    render(width: number): string[];
+    invalidate(): void;
+    handleInput?(data: string): void;
+  };
+
+  try {
+    const globalScope = globalThis as GlobalWithPermissionSystem;
+    const api = globalScope.__piPermissionSystem;
+    assert.ok(api);
+    assert.equal(api.getYoloMode(), false);
+
+    await Promise.resolve(harness.handlers.session_start?.(
+      { reason: "startup" },
+      createMockContext(harness.cwd, harness.prompts, { hasUI: true, statusUpdates, notifications }),
+    ));
+
+    // Corrupt the shared config file so savePermissionSystemConfig refuses to
+    // overwrite it (preserving salvageable data).
+    const corruptContent = '{"debug": false,';
+    writeFileSync(harness.extensionConfigPath, corruptContent, "utf8");
+
+    const command = harness.registeredCommands.get("permission-system");
+    assert.ok(command, "permission-system command should be registered");
+
+    // Open the real settings modal through the registered command and capture
+    // the custom component so we can drive it.
+    const holder: { component?: CustomComponent } = {};
+    const commandCtx = {
+      hasUI: true,
+      ui: {
+        notify: (message: string, level: string): void => {
+          notifications.push({ message, level });
+        },
+        setStatus: (key: string, value: string | undefined): void => {
+          statusUpdates.push({ key, value });
+        },
+        custom: async (renderer: (...args: unknown[]) => CustomComponent): Promise<undefined> => {
+          holder.component = renderer(
+            { requestRender: () => undefined },
+            createModalTestTheme(),
+            {},
+            () => undefined,
+          );
+          return undefined;
+        },
+      },
+    };
+
+    await Promise.resolve(command.handler("", commandCtx as never));
+    assert.ok(holder.component, "settings modal should have been opened");
+
+    // Move from "Debug logging" to "YOLO mode" (second setting) and toggle it.
+    holder.component.handleInput?.("\x1b[B");
+    holder.component.handleInput?.(" ");
+
+    // The save must have failed with a visible error…
+    const errors = notifications.filter((entry) => entry.level === "error");
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]?.message ?? "", /Refusing to save permission-system config/);
+    // …but the session-local yolo toggle must still apply in memory, because
+    // yolo mode needs no disk at all.
+    assert.equal(api.getYoloMode(), true);
+    assert.equal(statusUpdates.at(-1)?.key, "pi-permission-system");
+    assert.equal(statusUpdates.at(-1)?.value, "yolo");
+    // And the corrupt file must be left untouched.
+    assert.equal(readFileSync(harness.extensionConfigPath, "utf8"), corruptContent);
   } finally {
     await harness.cleanup();
   }
