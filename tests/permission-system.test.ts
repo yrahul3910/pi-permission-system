@@ -127,6 +127,7 @@ type ExtensionHarnessOptions = {
   inputResponse?: string;
   statusUpdates?: Array<{ key: string; value: string | undefined }>;
   notifications?: Array<{ message: string; level: string }>;
+  workingMessages?: Array<string | undefined>;
   extensionConfig?: PermissionSystemExtensionConfig;
   activeAgentName?: string | null;
 };
@@ -267,6 +268,9 @@ function createMockContext(
       setStatus: (key: string, value: string | undefined): void => {
         options.statusUpdates?.push({ key, value });
       },
+      setWorkingMessage: (message?: string): void => {
+        options.workingMessages?.push(message);
+      },
       select: async (title: string): Promise<string | undefined> => {
         prompts.push(title);
         return options.selectResponse ?? "Allow Once";
@@ -310,6 +314,31 @@ await runAsyncTest("Extension registers only one supported session_start lifecyc
   try {
     assert.equal(harness.registeredEvents.includes("session_switch"), false);
     assert.equal(harness.registeredEvents.filter((eventName) => eventName === "session_start").length, 1);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("Extension shows the active turn runtime in Pi's working message", async () => {
+  const workingMessages: Array<string | undefined> = [];
+  const harness = createToolCallHarness(
+    { defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" } },
+    [],
+    { hasUI: true, workingMessages },
+  );
+
+  try {
+    await Promise.resolve(harness.handlers.turn_start?.(
+      { turnIndex: 3, timestamp: Date.now() },
+      createMockContext(harness.cwd, harness.prompts, { hasUI: true, workingMessages }),
+    ));
+    assert.equal(workingMessages.at(-1), "Working... (0s)");
+
+    await Promise.resolve(harness.handlers.turn_end?.(
+      { turnIndex: 3 },
+      createMockContext(harness.cwd, harness.prompts, { hasUI: true, workingMessages }),
+    ));
+    assert.equal(workingMessages.at(-1), undefined);
   } finally {
     await harness.cleanup();
   }

@@ -108,6 +108,7 @@ If you are coming from OpenCode, you usually do **not** need to rewrite your who
 - **Per-Agent Overrides** — Agent-specific permission policies via YAML frontmatter
 - **Subagent Permission Forwarding** — Forwards `ask` confirmations from non-UI subagents back to the main interactive session
 - **Runtime YOLO Control** — Lets users toggle yolo mode from the settings modal and lets other extensions toggle it through the runtime API
+- **Turn Runtime Indicator** — Adds active turn runtime to Pi's `Working...` spinner, excluding time spent waiting for permission decisions
 - **File-Based Debug Logging** — Writes verbose diagnostics and permission request/denial review entries to one debug file when enabled in `config.json`, including the responsible agent and raw tool-call input
 - **JSON Schema Validation** — Full schema for editor autocomplete and config validation
 - **External Directory Guard** — Enforces `special.external_directory` for path-bearing file tools that target paths outside the active working directory
@@ -177,6 +178,7 @@ The extension integrates via Pi's lifecycle hooks:
 |----------------------|-------------------------------------------------------------------------------------------|
 | `before_agent_start` | Filters active tools, removes denied tool entries from the system prompt, and hides denied skills |
 | `tool_call`          | Enforces permissions for every tool invocation                                            |
+| `turn_start` / `turn_end` | Shows the active runtime for the current turn in Pi's `Working...` spinner             |
 | `input`              | Tracks explicit `/skill:<name>` requests so user-invoked skill loads can proceed while agent-initiated reads remain policy-gated |
 
 **Additional behaviors:**
@@ -189,6 +191,7 @@ The extension integrates via Pi's lifecycle hooks:
 - Path-bearing file tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) evaluate `special.external_directory` before their normal tool permission when an explicit path points outside `ctx.cwd`
 - `read` calls under global and project Pi skill directories are checked against `skills` policy even when the skill entry is inferred from the path rather than an active prompt block.
 - Structured edit payloads are summarized by operation and line count in prompts so permission decisions do not require raw multiline JSON.
+- The turn runtime freezes while any local or forwarded permission decision is awaiting a response, so approval wait time is not counted.
 
 ## Configuration
 
@@ -644,6 +647,7 @@ src/
 ├── status.ts                    → Status line integration for runtime yolo state
 ├── system-prompt-sanitizer.ts   → Available-tools prompt filtering helpers
 ├── tool-registry.ts             → Registered tool name resolution
+├── turn-runtime.ts              → Active-turn working-spinner runtime with permission-wait pauses
 ├── types.ts                     → TypeScript type definitions
 ├── wildcard-matcher.ts          → Shared wildcard pattern compilation and matching
 ├── yolo-mode.ts                 → Runtime yolo approval helpers
@@ -652,6 +656,7 @@ src/
 tests/
 ├── permission-system.test.ts    → Core permission, layering, forwarding, and policy tests
 ├── config-modal.test.ts         → Modal command behavior tests
+├── turn-runtime.test.ts         → Active-turn runtime and permission-pause tests
 └── test-harness.ts              → Shared lightweight test helpers
 schemas/
 └── permissions.schema.json      → JSON Schema for policy validation

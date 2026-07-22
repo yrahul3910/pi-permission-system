@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added an active-turn runtime to Pi's `Working...` spinner. The runtime updates once per second and excludes time spent awaiting local or forwarded permission decisions.
+
 ## [0.8.0-patch.1] - 2026-07-10
 
 ### Added

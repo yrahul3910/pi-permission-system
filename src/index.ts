@@ -1,4 +1,4 @@
-import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type BeforeAgentStartEvent, type InputEvent, type ResourcesDiscoverEvent, type SessionStartEvent, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type BeforeAgentStartEvent, type InputEvent, type ResourcesDiscoverEvent, type SessionStartEvent, type ToolCallEvent, type TurnEndEvent, type TurnStartEvent } from "@earendil-works/pi-coding-agent";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -79,6 +79,7 @@ import {
 } from "./skill-prompt-sanitizer.js";
 import { sanitizeAvailableToolsSection } from "./system-prompt-sanitizer.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "./tool-registry.js";
+import { TurnRuntimeTracker } from "./turn-runtime.js";
 import type { PermissionCheckResult } from "./types.js";
 import { PERMISSION_SYSTEM_STATUS_KEY, syncPermissionSystemStatus } from "./status.js";
 import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "./yolo-mode.js";
@@ -1147,9 +1148,14 @@ function createForwardedPermissionLogDetails(
   };
 }
 
+type ProcessForwardedPermissionRequestsOptions = {
+  preserveLocation?: boolean;
+  turnRuntime?: TurnRuntimeTracker;
+};
+
 export async function processForwardedPermissionRequests(
   ctx: ExtensionContext,
-  options: { preserveLocation?: boolean } = {},
+  options: ProcessForwardedPermissionRequestsOptions = {},
 ): Promise<void> {
   if (!ctx.hasUI) {
     return;
@@ -1250,7 +1256,7 @@ export async function processForwardedPermissionRequests(
           ? `This forwarded prompt auto-denies after ${forwardedPromptTimeoutSeconds} seconds if unanswered.`
           : "This forwarded prompt will wait indefinitely until answered.";
 
-        decision = await requestPermissionDecisionFromUi(
+        const requestDecision = () => requestPermissionDecisionFromUi(
           ctx.ui,
           "Permission Required (Subagent)",
           [
@@ -1262,6 +1268,7 @@ export async function processForwardedPermissionRequests(
             ? { timeoutMs, timeoutDenialReason: timeoutDenialReason ?? DEFAULT_FORWARDED_PERMISSION_PROMPT_TIMEOUT_REASON }
             : {},
         );
+        decision = await (options.turnRuntime?.pauseWhile(requestDecision) ?? requestDecision());
       } catch (error) {
         logPermissionForwardingError("Failed to show forwarded permission confirmation dialog", error);
         decision = { approved: false, state: "denied" };
@@ -1365,6 +1372,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   let runtimeContext: ExtensionContext | null = null;
   let lastConfigWarning: string | null = null;
   const shownWarnings = new Set<string>();
+  const turnRuntime = new TurnRuntimeTracker();
 
   const invalidateAgentStartCache = (): void => {
     activeSkillEntries = [];
@@ -1662,7 +1670,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         notifyPermissionWaitingIfUnfocused(details.message);
       }
 
-      const decision = await confirmPermission(ctx, details.message);
+      const decision = await turnRuntime.pauseWhile(() => confirmPermission(ctx, details.message));
       reviewPermissionDecision(decision.approved ? "permission_request.approved" : "permission_request.denied", {
         ...details,
         resolution: decision.state,
@@ -1725,7 +1733,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     isProcessingForwardedRequests = true;
-    void processForwardedPermissionRequests(currentContext, { preserveLocation: true })
+    void processForwardedPermissionRequests(currentContext, { preserveLocation: true, turnRuntime })
       .finally(() => {
         isProcessingForwardedRequests = false;
         if (pendingForwardedRequestScan) {
@@ -1900,6 +1908,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
 
   pi.on("session_start", async (event: SessionStartEvent, ctx: ExtensionContext) => {
+    turnRuntime.stop();
     await ensureModelOptionCompatibilityRegistered();
     sessionApprovals.clear();
     recentPermissionPromptDecisions.clear();
@@ -1934,6 +1943,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
 
   pi.on("session_shutdown", async () => {
+    turnRuntime.stop();
     runtimeContext?.ui.setStatus(PERMISSION_SYSTEM_STATUS_KEY, undefined);
     sessionApprovals.clear();
     recentPermissionPromptDecisions.clear();
@@ -1945,6 +1955,22 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     invalidateAgentStartCache();
     stopForwardedPermissionPolling();
     disposeFocusTracker();
+  });
+
+  pi.on("agent_end", async () => {
+    turnRuntime.stop();
+  });
+
+  pi.on("turn_start", async (event: TurnStartEvent, ctx: ExtensionContext) => {
+    if (!ctx.hasUI || ctx.mode === "rpc") {
+      return;
+    }
+
+    turnRuntime.start(ctx.ui, event.turnIndex, event.timestamp);
+  });
+
+  pi.on("turn_end", async (event: TurnEndEvent) => {
+    turnRuntime.stop(event.turnIndex);
   });
 
   pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx: ExtensionContext) => {
