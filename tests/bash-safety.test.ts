@@ -321,6 +321,34 @@ runTest("C5: overlong sed script fails closed as complexSyntax", () => {
   assertCategory(`sed ${"x".repeat(1_500)} file`, "complexSyntax");
 });
 
+runTest("C6: backslash-heavy sed scripts cannot trigger regex backtracking blowup (ReDoS)", () => {
+  // Unterminated s-commands made of backslashes are the classic catastrophic
+  // backtracking input for the sed execution-expression regexes. With
+  // exponential backtracking even ~40 backslashes would hang; 400 must
+  // complete instantly.
+  const backslashes = "\\".repeat(400);
+  const inputs = [
+    `sed 's/${backslashes}' file`,
+    `sed 's/${backslashes}e' file`,
+    `sed 's${backslashes}' file`,
+    `sed '/${backslashes}' file`,
+    `sed '/${backslashes}/e${backslashes}' file`,
+  ];
+
+  const start = performance.now();
+  for (const command of inputs) {
+    analyzeBashCommand(command);
+  }
+  const elapsedMs = performance.now() - start;
+  assert.ok(elapsedMs < 1_000, `sed analysis took ${Math.round(elapsedMs)}ms; expected linear-time behavior`);
+});
+
+runTest("C7: disjoint sed regexes still detect execution expressions with escapes", () => {
+  assertCategory("sed 's/a\\/b/c/e' file", "riskyOptions");
+  assertCategory("sed '/a\\/b/e' file", "riskyOptions");
+  assertNotCategory("sed 's/a\\/b/c/g' file", "riskyOptions");
+});
+
 // ===========================================================================
 // Section D: Safe command family derivation
 // ===========================================================================
