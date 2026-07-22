@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { BashFilter } from "../src/bash-filter.js";
 import {
   createActiveToolsCacheKey,
   createBeforeAgentStartPromptStateKey,
@@ -65,7 +64,9 @@ type CreateManagerOptions = {
 };
 
 function createManager(
-  config: GlobalPermissionConfig,
+  // Loosely typed: configs are serialized to JSON and go through the loader's
+  // normalization, which fills in defaults for omitted sections.
+  config: Record<string, unknown>,
   agentFiles: Record<string, string> = {},
   options: CreateManagerOptions = {},
 ) {
@@ -179,7 +180,7 @@ async function readLogUntil(logPath: string, predicate: (content: string) => boo
 }
 
 function createToolCallHarness(
-  config: GlobalPermissionConfig,
+  config: Record<string, unknown>,
   toolNames: readonly string[],
   options: ExtensionHarnessOptions = {},
 ): ExtensionHarness {
@@ -229,12 +230,13 @@ function createToolCallHarness(
         emit: (): void => {},
       },
     } as never);
-  } finally {
+  } catch (error) {
     if (originalAgentDir === undefined) {
       delete process.env.PI_CODING_AGENT_DIR;
     } else {
       process.env.PI_CODING_AGENT_DIR = originalAgentDir;
     }
+    throw error;
   }
 
   return {
@@ -248,6 +250,11 @@ function createToolCallHarness(
     debugPath,
     cleanup: async (): Promise<void> => {
       await Promise.resolve(handlers.session_shutdown?.({}, createMockContext(cwd, prompts, options)));
+      if (originalAgentDir === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+      }
       if (originalConfigPath === undefined) {
         delete process.env[CONFIG_PATH_ENV_KEY];
       } else {
@@ -940,119 +947,66 @@ await runAsyncTest("Permission-system logger writes review entries without debug
   }
 });
 
-runTest("BashFilter uses opencode-style last-match hierarchy", () => {
-  const filter = new BashFilter(
-    {
-      "*": "ask",
-      "git *": "deny",
-      "git status *": "ask",
-      "git status": "allow",
+runTest("bash rules: prefix precedence deny > ask > allow per piece", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+    bash: {
+      allow: ["git status"],
+      ask: ["git status --porcelain"],
+      deny: ["git push"],
     },
-    "deny",
-  );
+  });
 
-  const exact = filter.check("git status");
-  assert.equal(exact.state, "allow");
-  assert.equal(exact.matchedPattern, "git status");
-
-  const subcommand = filter.check("git status --short");
-  assert.equal(subcommand.state, "ask");
-  assert.equal(subcommand.matchedPattern, "git status *");
-
-  const generic = filter.check("git commit -m test");
-  assert.equal(generic.state, "deny");
-  assert.equal(generic.matchedPattern, "git *");
+  assert.equal(manager.checkPermission("bash", { command: "git status" }).state, "allow");
+  // Ask rules outrank allow rules and the registry.
+  assert.equal(manager.checkPermission("bash", { command: "git status --porcelain" }).state, "ask");
+  assert.equal(manager.checkPermission("bash", { command: "git push origin" }).state, "deny");
+  cleanup();
 });
 
-runTest("BashFilter allows piped commands when all subcommands match allowed patterns", () => {
-  const filter = new BashFilter(
-    {
-      "git status": "allow",
-      "grep *": "allow",
-      "echo *": "allow",
-    },
-    "ask",
-  );
+runTest("bash rules: compound commands allow only when every piece allows", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+    bash: { allow: [], ask: [], deny: ["rm"] },
+  });
 
-  const piped = filter.check("git status | grep branch");
-  assert.equal(piped.state, "allow");
-
-  const chained = filter.check("echo hello && echo world");
-  assert.equal(chained.state, "allow");
-
-  const sequential = filter.check("echo one ; echo two");
-  assert.equal(sequential.state, "allow");
-
-  const orChain = filter.check("echo ok || echo fallback");
-  assert.equal(orChain.state, "allow");
+  assert.equal(manager.checkPermission("bash", { command: "git status | grep branch" }).state, "allow");
+  assert.equal(manager.checkPermission("bash", { command: "echo hello && echo world" }).state, "allow");
+  assert.equal(manager.checkPermission("bash", { command: "echo one ; echo two" }).state, "allow");
+  // Most restrictive piece wins.
+  assert.equal(manager.checkPermission("bash", { command: "echo hello | rm -rf /" }).state, "deny");
+  assert.equal(manager.checkPermission("bash", { command: "echo hello | unknown_command" }).state, "ask");
+  cleanup();
 });
 
-runTest("BashFilter returns most restrictive state for piped commands", () => {
-  const filter = new BashFilter(
-    {
-      "echo *": "allow",
-      "rm *": "deny",
-      "grep *": "ask",
-    },
-    "ask",
-  );
+runTest("bash rules: quoted operators do not split; substitutions are evaluated", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+    bash: { allow: [], ask: [], deny: [] },
+  });
 
-  const pipedDeny = filter.check("echo hello | rm -rf /");
-  assert.equal(pipedDeny.state, "deny");
-  assert.equal(pipedDeny.matchedPattern, "rm *");
-
-  const pipedAsk = filter.check("echo hello | grep foo");
-  assert.equal(pipedAsk.state, "ask");
-  assert.equal(pipedAsk.matchedPattern, "grep *");
+  // Pipe inside quotes is data.
+  assert.equal(manager.checkPermission("bash", { command: "echo 'hello | world'" }).state, "allow");
+  // A substitution's inner commands are evaluated individually (cat and grep
+  // are registry-vouched, so the whole command still allows).
+  assert.equal(manager.checkPermission("bash", { command: "echo $(cat file | grep match)" }).state, "allow");
+  // An unknown command inside a substitution still asks.
+  assert.equal(manager.checkPermission("bash", { command: "echo $(evilcmd)" }).state, "ask");
+  cleanup();
 });
 
-runTest("BashFilter falls back to default when any subcommand has no pattern match", () => {
-  const filter = new BashFilter(
-    {
-      "echo *": "allow",
-    },
-    "ask",
-  );
+runTest("bash rules: a deny on any piece blocks the whole compound", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+    bash: { allow: [], ask: [], deny: ["grep"] },
+  });
 
-  const partial = filter.check("echo hello | unknown_command");
-  assert.equal(partial.state, "ask");
-  assert.equal(partial.matchedPattern, undefined);
-});
-
-runTest("BashFilter respects quotes and subshells when splitting piped commands", () => {
-  const filter = new BashFilter(
-    {
-      "echo *": "allow",
-      "grep *": "allow",
-    },
-    "ask",
-  );
-
-  // Pipe inside quotes should NOT split
-  const quoted = filter.check("echo 'hello | world'");
-  assert.equal(quoted.state, "allow");
-  assert.equal(quoted.matchedPattern, "echo *");
-
-  // Pipe inside $(...) subshell should NOT split
-  const subshell = filter.check("echo $(cat file | grep match)");
-  assert.equal(subshell.state, "allow");
-  assert.equal(subshell.matchedPattern, "echo *");
-});
-
-runTest("BashFilter full-command pattern takes precedence over subcommand splitting", () => {
-  const filter = new BashFilter(
-    {
-      "git status | grep *": "deny",
-      "git status": "allow",
-      "grep *": "allow",
-    },
-    "ask",
-  );
-
-  // Full-command pattern matches first → deny (even though subcommands are allowed)
-  const fullMatch = filter.check("git status | grep branch");
-  assert.equal(fullMatch.state, "deny");
-  assert.equal(fullMatch.matchedPattern, "git status | grep *");
+  // Every piece is evaluated; the deny rule on grep blocks the compound even
+  // though git status alone is registry-vouched.
+  const denied = manager.checkPermission("bash", { command: "git status | grep branch" });
+  assert.equal(denied.state, "deny");
+  assert.ok(denied.bashEvaluation?.pieces.some((piece) => piece.reason.includes("deny rule 'grep'")));
+  cleanup();
 });
 
 runTest("PermissionManager allows piped bash commands when all subcommands are permitted", () => {
@@ -1065,9 +1019,7 @@ runTest("PermissionManager allows piped bash commands when all subcommands are p
       special: "ask",
     },
     bash: {
-      "git status": "allow",
-      "grep *": "allow",
-      "wc *": "allow",
+      allow: ["git status"],
     },
   });
 
@@ -1098,8 +1050,7 @@ runTest("PermissionManager returns most restrictive bash state across piped subc
       special: "ask",
     },
     bash: {
-      "echo *": "allow",
-      "rm -rf *": "deny",
+      deny: ["rm -rf"],
     },
   });
 
@@ -1107,7 +1058,7 @@ runTest("PermissionManager returns most restrictive bash state across piped subc
     const denied = manager.checkPermission("bash", { command: "echo hello && rm -rf build" });
     assert.equal(denied.state, "deny");
     assert.equal(denied.source, "bash");
-    assert.equal(denied.matchedPattern, "rm -rf *");
+    assert.ok(denied.bashEvaluation?.pieces.some((piece) => piece.reason.includes("deny rule 'rm -rf'")));
   } finally {
     cleanup();
   }
@@ -1117,6 +1068,7 @@ await runAsyncTest("OpenCode-style Allow Once approves only the current request"
   const harness = createToolCallHarness(
     {
       defaultPolicy: { tools: "allow", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+      bash: { ask: ["git status"] },
     },
     ["bash"],
   );
@@ -1149,6 +1101,7 @@ await runAsyncTest("OpenCode-style Allow Always approves matching requests for t
   const harness = createToolCallHarness(
     {
       defaultPolicy: { tools: "allow", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+      bash: { ask: ["git status"] },
     },
     ["bash"],
   );
@@ -1180,6 +1133,7 @@ await runAsyncTest("OpenCode-style Reject with Reason prompts for feedback and r
   const harness = createToolCallHarness(
     {
       defaultPolicy: { tools: "allow", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+      bash: { ask: ["git status"] },
     },
     ["bash"],
   );
@@ -1241,7 +1195,7 @@ runTest("Bash patterns stay higher priority than tool-level bash fallback", () =
         special: "ask",
       },
       bash: {
-        "rm -rf *": "deny",
+        deny: ["rm -rf"],
       },
     },
     {
@@ -1256,15 +1210,15 @@ permission:
   );
 
   try {
+    // A deny rule outranks the agent's tools.bash allow fallback.
     const denied = manager.checkPermission("bash", { command: "rm -rf build" }, "reviewer");
     assert.equal(denied.state, "deny");
     assert.equal(denied.source, "bash");
-    assert.equal(denied.matchedPattern, "rm -rf *");
 
-    const fallback = manager.checkPermission("bash", { command: "echo hello" }, "reviewer");
+    // An unknown, unmatched command falls through to tools.bash allow.
+    const fallback = manager.checkPermission("bash", { command: "unknowncmd hello" }, "reviewer");
     assert.equal(fallback.state, "allow");
     assert.equal(fallback.source, "bash");
-    assert.equal(fallback.matchedPattern, undefined);
   } finally {
     cleanup();
   }
@@ -2155,12 +2109,12 @@ runTest("Permission forwarding rejects unresolved sentinel session ids", () => {
 });
 
 type CreateManagerWithProjectOptions = CreateManagerOptions & {
-  projectConfig?: AgentPermissions;
+  projectConfig?: Record<string, unknown>;
   projectAgentFiles?: Record<string, string>;
 };
 
 function createManagerWithProject(
-  config: GlobalPermissionConfig,
+  config: Record<string, unknown>,
   agentFiles: Record<string, string> = {},
   options: CreateManagerWithProjectOptions = {},
 ) {
@@ -2214,33 +2168,32 @@ runTest("Project-level config cannot relax global bash deny floors", () => {
         special: "ask",
       },
       bash: {
-        "rm -rf *": "deny",
+        deny: ["rm -rf"],
       },
     },
     {},
     {
       projectConfig: {
         bash: {
-          "rm -rf build": "allow",
+          allow: ["rm -rf build"],
         },
       },
     },
   );
 
   try {
+    // Deny rules from any layer always win over allows added by another.
     const deniedBuild = manager.checkPermission("bash", { command: "rm -rf build" });
     assert.equal(deniedBuild.state, "deny");
-    assert.equal(deniedBuild.matchedPattern, "rm -rf *");
 
     const denied = manager.checkPermission("bash", { command: "rm -rf node_modules" });
     assert.equal(denied.state, "deny");
-    assert.equal(denied.matchedPattern, "rm -rf *");
   } finally {
     cleanup();
   }
 });
 
-runTest("System-agent config overrides project-level bash patterns", () => {
+runTest("Agent frontmatter bash rules combine with project rules by type", () => {
   const { manager, cleanup } = createManagerWithProject(
     {
       defaultPolicy: {
@@ -2250,33 +2203,37 @@ runTest("System-agent config overrides project-level bash patterns", () => {
         skills: "ask",
         special: "ask",
       },
+      bash: { registryOverrides: { git: null } },
     },
     {
       reviewer: `---
 name: reviewer
 permission:
   bash:
-    "git log *": allow
+    allow: "git log"
 ---
 `,
     },
     {
       projectConfig: {
         bash: {
-          "git *": "deny",
+          deny: ["git push"],
         },
       },
     },
   );
 
   try {
+    // The agent frontmatter allow applies (registry row disabled globally,
+    // so this is the only reason git log allows).
     const allowed = manager.checkPermission("bash", { command: "git log --oneline" }, "reviewer");
     assert.equal(allowed.state, "allow");
-    assert.equal(allowed.matchedPattern, "git log *");
 
-    const denied = manager.checkPermission("bash", { command: "git status" }, "reviewer");
+    // The project deny wins regardless of layer, and unmatched forms ask.
+    const denied = manager.checkPermission("bash", { command: "git push origin" }, "reviewer");
     assert.equal(denied.state, "deny");
-    assert.equal(denied.matchedPattern, "git *");
+    const asked = manager.checkPermission("bash", { command: "git status" }, "reviewer");
+    assert.equal(asked.state, "ask");
   } finally {
     cleanup();
   }
@@ -2422,13 +2379,9 @@ runTest("PermissionManager reads config from PI_CODING_AGENT_DIR when set", () =
   const agentsDir = join(baseDir, "agents");
   mkdirSync(agentsDir, { recursive: true });
 
-  const config: GlobalPermissionConfig = {
+  const config: Record<string, unknown> = {
     defaultPolicy: { tools: "deny", bash: "deny", mcp: "deny", skills: "deny", special: "deny" },
     tools: { read: "allow" },
-    bash: {},
-    mcp: {},
-    skills: {},
-    special: {},
   };
   writeFileSync(join(baseDir, "pi-permissions.jsonc"), JSON.stringify(config), "utf8");
 
@@ -3468,6 +3421,7 @@ await runAsyncTest("debug review entries include requested bash commands", async
   const harness = createToolCallHarness(
     {
       defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
+      bash: { ask: ["git status"] },
     },
     ["bash"],
     { extensionConfig: { ...DEFAULT_EXTENSION_CONFIG, debug: true } },
@@ -3598,35 +3552,26 @@ await runAsyncTest("TARGETED SMOKE: agent 'code' with '*': deny blocked from rea
 // approval features are added.
 // ---------------------------------------------------------------------------
 
-runTest("ISSUE23-BASELINE: PermissionManager wildcard star matches zero-or-more", () => {
+runTest("ISSUE23-BASELINE: bash allow prefixes cover the whole family", () => {
   const { manager, cleanup } = createManager({
     defaultPolicy: { tools: "deny", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
-    bash: { "git *": "allow" },
+    bash: { allow: ["git"] },
   });
   try {
-    const r1 = manager.checkPermission("bash", { command: "git status" });
-    assert.equal(r1.state, "allow");
-    assert.equal(r1.matchedPattern, "git *");
-
-    const r2 = manager.checkPermission("bash", { command: "git commit -m test" });
-    assert.equal(r2.state, "allow");
-    assert.equal(r2.matchedPattern, "git *");
+    assert.equal(manager.checkPermission("bash", { command: "git status" }).state, "allow");
+    assert.equal(manager.checkPermission("bash", { command: "git commit -m test" }).state, "allow");
   } finally { cleanup(); }
 });
 
-runTest("ISSUE23-BASELINE: PermissionManager last-match-wins with wildcard patterns", () => {
+runTest("ISSUE23-BASELINE: rule-type precedence deny > ask > allow", () => {
   const { manager, cleanup } = createManager({
     defaultPolicy: { tools: "deny", bash: "ask", mcp: "ask", skills: "ask", special: "ask" },
-    bash: { "git *": "deny", "git status *": "allow", "git status": "deny" },
+    bash: { allow: ["git status"], ask: ["git status --short"], deny: ["git status --porcelain"] },
   });
   try {
-    const r1 = manager.checkPermission("bash", { command: "git status" });
-    assert.equal(r1.state, "deny");
-    assert.equal(r1.matchedPattern, "git status");
-
-    const r2 = manager.checkPermission("bash", { command: "git status --short" });
-    assert.equal(r2.state, "allow");
-    assert.equal(r2.matchedPattern, "git status *");
+    assert.equal(manager.checkPermission("bash", { command: "git status" }).state, "allow");
+    assert.equal(manager.checkPermission("bash", { command: "git status --short" }).state, "ask");
+    assert.equal(manager.checkPermission("bash", { command: "git status --porcelain" }).state, "deny");
   } finally { cleanup(); }
 });
 

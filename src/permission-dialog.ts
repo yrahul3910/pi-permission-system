@@ -21,16 +21,17 @@ export type PermissionDecisionRequestOptions = {
   timeoutMs?: number;
   timeoutDenialReason?: string;
   /**
-   * Validated safe-command family (e.g. "rg") for a bash prompt. When set, the
-   * dialog offers "Allow safe <family> commands this session". Callers must
-   * only pass a family derived from the real command via the bash safety
-   * analyzer — never a UI label or forwarded payload.
+   * Command family prefixes (e.g. ["wc", "git push"]) for a bash prompt.
+   * When set, the dialog offers "Allow for this session: wc, git push".
+   * Callers must only pass families derived from the real command via the
+   * bash evaluator — never a UI label or forwarded payload — and must
+   * re-derive them again before persisting the approval.
    */
-  safeCommandFamily?: string;
+  sessionFamilies?: readonly string[];
 };
 
-export function formatSafeFamilyOptionLabel(family: string): string {
-  return `Allow safe ${family} commands this session`;
+export function formatSessionFamiliesOptionLabel(families: readonly string[]): string {
+  return `Allow for this session: ${families.join(", ")}`;
 }
 
 /** Decision states that persist a session-scoped approval when approved. */
@@ -134,10 +135,12 @@ export async function requestPermissionDecisionFromUi(
   const selectOptions = typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
     ? { timeout: options.timeoutMs }
     : undefined;
-  const safeCommandFamily = getNonEmptyString(options.safeCommandFamily);
-  const safeFamilyOption = safeCommandFamily ? formatSafeFamilyOptionLabel(safeCommandFamily) : null;
-  const decisionOptions = safeFamilyOption
-    ? [APPROVE_ONCE_OPTION, APPROVE_ALWAYS_OPTION, safeFamilyOption, REJECT_OPTION, REJECT_WITH_REASON_OPTION]
+  const sessionFamilies = (options.sessionFamilies ?? [])
+    .map((family) => family.trim())
+    .filter((family) => family.length > 0);
+  const sessionFamiliesOption = sessionFamilies.length > 0 ? formatSessionFamiliesOptionLabel(sessionFamilies) : null;
+  const decisionOptions = sessionFamiliesOption
+    ? [APPROVE_ONCE_OPTION, APPROVE_ALWAYS_OPTION, sessionFamiliesOption, REJECT_OPTION, REJECT_WITH_REASON_OPTION]
     : [...PERMISSION_DECISION_OPTIONS];
   const selected = await ui.select(
     compactPermissionPromptForSelect(`${title}\n${message}`),
@@ -159,7 +162,7 @@ export async function requestPermissionDecisionFromUi(
     };
   }
 
-  if (safeFamilyOption && selected === safeFamilyOption) {
+  if (sessionFamiliesOption && selected === sessionFamiliesOption) {
     return {
       approved: true,
       state: "always_family",

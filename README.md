@@ -102,9 +102,10 @@ If you are coming from OpenCode, you usually do **not** need to rewrite your who
 - **Tool Filtering** — Hides disallowed tools from the agent before it starts (reduces "try another tool" behavior)
 - **System Prompt Sanitization** — Removes denied tool entries from the `Available tools:` system prompt section so the agent only sees tools it can actually call
 - **Runtime Enforcement** — Blocks/asks/allows at tool call time with UI confirmation dialogs and readable approval summaries
-- **Bash Command Control** — Wildcard pattern matching for granular bash command permissions
-- **Bash Safety Gate** — Optional `bashSafety` policy that keeps broad allow rules like `rg *` from silently authorizing command substitution, pipes/compound commands, redirections, or risky options such as `rg --pre` and `sed -i`
-- **Safe Family Session Approvals** — Approval prompts for a single safe simple command offer `Allow safe <family> commands this session`, recording a session-only `<family> *` approval that never covers safety-gated variants
+- **Bash Command Decomposition** — Every bash invocation is parsed with the canonical bash grammar (mvdan-sh) and decomposed into the commands it actually executes (including inside `$(...)`, backticks, `bash -c` strings, and wrappers like `timeout`/`env`/`xargs`) and the files it reads and writes; each piece is evaluated on its own, so pipes and `&&` chains of allowed commands never prompt
+- **Safe-Command Registry** — Read-only commands (`rg`, `cat`, `git log`, ...) are allowed out of the box by a declarative, overridable registry, so most agent traffic needs zero config; unsafe forms (`fd -x`, `sed -i`, `rg --pre`) fall out of the vouch and prompt
+- **Protected Paths** — Secrets like `.env`, `.ssh/`, and `id_rsa*` are denied to every command by default — including via input redirection and `git show HEAD:.env` — outranking every allow rule
+- **Session Family Approvals** — Approval prompts list exactly the blocking pieces and offer `Allow for this session: <families>`; approved families silence matching pieces of later compounds while everything else still gets checked
 - **MCP Access Control** — Server and tool-level permissions for MCP operations
 - **Skill Protection** — Controls which skills can be loaded or read from disk, including multi-block prompt sanitization and path-inferred reads under Pi skill directories
 - **Per-Agent Overrides** — Agent-specific permission policies via YAML frontmatter
@@ -173,7 +174,7 @@ All permissions use one of three states:
 
 When an `ask` permission prompts, the confirmation UI offers `Allow Once`, `Allow Always`, `Reject`, and `Reject with Reason`. `Allow Once` approves only the current request. `Allow Always` records an explicit matching approval for the current session only (in-memory, not persisted to disk), while plain `Reject` and `Reject with Reason` deny only the current request and do not silently become future defaults. YOLO/auto-response approvals also do not create saved approval rules; after YOLO mode is disabled, matching `ask` requests require approval again. A configured `deny` remains a hard boundary and is not relaxed by prior one-shot, auto-response, or saved approvals.
 
-For a bash prompt whose command is exactly one safe simple command — no substitutions, redirections, pipes/compound operators, risky options, or ambiguous syntax — the dialog additionally offers `Allow safe <family> commands this session` (for example, `Allow safe rg commands this session` when approving `rg foo src`). Choosing it records a session-only approval equivalent to `{ tool: "bash", pattern: "rg *", action: "allow" }` that applies **only to other safe simple commands of that family**: later `rg --pre ...`, `rg foo > out.txt`, `rg $(...)`, piped, compound, or multi-line `rg` commands still ask (or stay denied). The family is always re-derived from the real command text before it is saved, and the option is never offered for unsafe, compound, malformed, redirected, substituted, or ambiguous commands or for wrapper executables such as `sudo`, `env`, `xargs`, or shells.
+For a bash prompt, the dialog additionally offers `Allow for this session: <families>` when every blocking piece is an ask with a clear plain-word command (for example `Allow for this session: wc` when approving `git log | wc -l`, or `Allow for this session: git push`). A family is the command word, extended to `<cmd> <subcommand>` for subcommand-structured tools (`git`, `gh`, `cargo`, `npm`, `uv`, ...). Choosing it records session-only allow prefixes that act exactly like config allow rules — which is safe by construction, because every piece of every later command is still evaluated individually: `wc $(evil)`, `wc > file`, and protected-path reads still prompt or deny. The families are always re-derived from the real evaluation of the command text before saving, never from a UI label or forwarded payload, and the option is omitted whenever any blocking piece is a deny, a write, a syntax finding, an opaque executable (`sudo`, `eval`, shells), or has no literal plain-word command.
 
 ### Pi Integration Hooks
 
@@ -307,8 +308,8 @@ The policy file is a JSON object with these sections:
 |-----------------|-----------------------------------------------------|
 | `defaultPolicy` | Fallback permissions per category                   |
 | `tools`         | Pattern-based tool permissions for registered tools |
-| `bash`          | Command pattern permissions                         |
-| `bashSafety`    | Safety gate for shell syntax, redirections, and risky options in bash commands |
+| `bash`          | Prefix rule lists (`allow`/`ask`/`deny`), syntax policy, and registry overrides |
+| `protectedPaths` | Additional protected path patterns denied to every bash command |
 | `mcp`           | MCP server/tool permissions for calls routed through a registered `mcp` tool |
 | `skills`        | Skill name pattern permissions                      |
 | `special`       | Reserved permission checks such as external directory access |
@@ -328,8 +329,8 @@ permission:
     write: deny
     mcp: allow
   bash:
-    git status: allow
-    git *: ask
+    allow: "cargo test, bun test"
+    deny: "git push --force"
   mcp:
     chrome_devtools_*: deny
     exa_*: allow
@@ -359,7 +360,7 @@ Project-local files use the same formats as the global policy file and global ag
 3. Global agent frontmatter
 4. Project agent frontmatter
 
-Later trusted layers override earlier layers within the same permission category, and project-local layers can tighten policy by adding `deny` rules. Project-local policy cannot relax a `deny` from the global policy file or global agent frontmatter: an `allow` or `ask` in a project policy is ignored when the latest matching trusted layer is `deny`. For wildcard-based sections like `tools`, `bash`, `mcp`, `skills`, and `special`, matching still follows **last matching rule wins** within the applicable trust boundary, with global/system `deny` rules acting as floors for project-local overrides.
+Later trusted layers override earlier layers within the same permission category, and project-local layers can tighten policy by adding `deny` rules. Project-local policy cannot relax a `deny` from the global policy file or global agent frontmatter: an `allow` or `ask` in a project policy is ignored when the latest matching trusted layer is `deny`. For wildcard-based sections like `tools`, `mcp`, `skills`, and `special`, matching still follows **last matching rule wins** within the applicable trust boundary, with global/system `deny` rules acting as floors for project-local overrides. Bash rule lists concatenate across layers and combine by rule type (`deny` > protected paths > `ask` > `allow`), so a project layer can add rules but a `deny` from any layer always wins.
 
 ---
 
@@ -424,7 +425,7 @@ Path-bearing built-ins (`read`, `write`, `edit`, `find`, `grep`, `ls`) can also 
 
 Action-scoped resource rules still respect normal permission guardrails: matching uses the same wildcard/last-match behavior as other tool rules, and outside-worktree paths must also satisfy the `special.external_directory` check.
 
-> **Note:** Setting `tools.bash` affects the *default* for bash commands, but `bash` patterns can provide command-level overrides.
+> **Note:** Setting `tools.bash` affects the *default* for bash commands that nothing else matches; `bash` rules, the safe-command registry, and protected paths all take precedence over it.
 >
 > **Note:** Setting `tools.mcp` controls coarse access to a registered `mcp` proxy tool when one is available. Specific `mcp` rules still override it when a proxy target pattern matches. Direct MCP tools registered by extensions are regular registered tools and should be controlled with `tools` patterns such as `context7_*` or `github_*`.
 >
@@ -432,56 +433,104 @@ Action-scoped resource rules still respect normal permission guardrails: matchin
 
 ### `bash`
 
-Command patterns use `*` wildcards and match against the full command string. If multiple patterns match, the **last declared matching rule wins**. Put broad fallback rules first and more specific overrides later.
+Bash permissions were redesigned around one idea: **a command is judged by what it actually does, not by what its string looks like.** Every invocation is parsed with the canonical bash grammar (via `mvdan-sh`) and decomposed into:
+
+- the simple commands it executes — on either side of pipes and `&&`/`||`/`;` chains, inside `$(...)`/backtick/process substitutions, in loop and conditional bodies, inside `bash -c "..."` strings, and behind unwrapped wrappers (`env`, `timeout`, `nice`, `xargs`, `stdbuf`, `nohup`, `setsid`, `time`, `command`, and leading `VAR=x` assignments);
+- the files it reads and writes through redirections (heredoc bodies are data, `2>&1`-style fd duplications and `/dev/null` are non-effects).
+
+Each executed command is then resolved **individually**, in strict order:
+
+1. a `deny` prefix rule matches → **deny**
+2. any argv token or redirection target matches a protected path → **deny**
+3. an `ask` prefix rule matches → **ask**
+4. an `allow` prefix rule / session approval matches, or the built-in safe-command registry vouches → **allow**
+5. otherwise → `defaultPolicy.bash` (`ask` out of the box)
+
+Write redirection targets additionally need write permission (see below). The overall answer is the most restrictive across all pieces — and **when every piece resolves to allow, there is no prompt at all**: `rg foo | wc -l`, `git log --oneline | head`, `cmd >/dev/null 2>&1`, and `FOO=1 timeout 5 cargo test` run silently under an empty config.
+
+Rules are **word-prefix lists**, not globs:
 
 ```jsonc
 {
   "bash": {
-    "git *": "ask",
-    "git status": "allow",
-    "rm -rf *": "deny"
+    "allow": ["cargo clippy", "cargo test", "bun test", "uv run pytest"],
+    "ask": ["git diff"],          // force a prompt even though the registry vouches
+    "deny": ["git push --force"],
+    "syntax": {                    // optional; these are the defaults
+      "subshells": "deny",         // `(...)` and `{ ...; }`
+      "unanalyzable": "ask"        // parse failures etc. (fails closed)
+    },
+    "registryOverrides": {}
   }
 }
 ```
 
-### `bashSafety`
+A rule matches when its words prefix the command's normalized argv: `"cargo test"` covers `cargo test --workspace`, `"rg"` covers any rg invocation. Quoting tricks don't evade matching (`cat .e''nv` normalizes to `cat .env`). In agent frontmatter, where the minimal YAML parser cannot express arrays, use a comma-separated string: `allow: "cargo test, bun test"`.
 
-Broad allow rules such as `"rg *": "allow"` or `"git diff *": "allow"` match the full command string, so without extra protection they would also match `rg --pre evil ...`, `rg foo > out.txt`, or `rg $(cmd)`. The `bashSafety` section adds a conservative, quote/escape-aware safety gate that classifies each bash command before it runs:
+`sudo`, `doas`, `su`, `eval`, `exec`, `source`, and shells run on script files are **opaque**: they always prompt at minimum and cannot be covered by allow rules.
 
-| Category        | Triggers on |
-|-----------------|-------------|
-| `complexSyntax` | Command substitution (`$(...)`, backticks), process substitution (`<(...)`, `>(...)`), compound operators (`\|`, `\|\|`, `&&`, `;`, background `&`), subshell parentheses, real unquoted newlines that separate commands, and malformed/unbalanced quoting or any syntax the analyzer cannot confidently parse (fails closed) |
-| `redirections`  | `>`, `>>`, `<`, `<<`, `<<<`, `2>`, `>&`, `<&`, `&>`, `&>>`, and similar redirection operators |
-| `riskyOptions`  | `rg --pre` / `--pre=...`, `fd --exec` / `--exec-batch` / `-x` / `-X`, `sed -i` / `--in-place` and execution expressions such as `s/a/b/e`, `git --ext-diff` |
+#### The safe-command registry
 
-Quoted or escaped metacharacters do not trigger the gate (`rg "foo|bar" src` and `echo 'a > b'` are safe), but command substitution inside double quotes still counts because the shell would execute it.
+Most read-only commands need no config at all. A declarative registry (`src/safe-commands.ts`, reproduced under [Defaults](#bash-defaults)) **vouches** for the plain read-only invocation of common utilities. A row stops vouching when:
+
+- an argument matches the row's `unsafeArgs` (`fd -x`, `sed -i`, `sort -o`, `find -exec`, `rg --pre`, ...), or an `unsafePatterns` regex (sed `e`-flag scripts);
+- for subcommand-structured tools, the leading non-flag words don't start with a listed `safeSubcommands` word sequence (`git log` is vouched; `git push` is not).
+
+An unvouched invocation is evaluated like any unknown command, with one guard: **an allow rule only covers an unsafe-argument invocation if the rule names the argument** — `"sed -i"` opts into in-place edits, plain `"sed"` does not. Unsafe-pattern and expansion-carrying invocations of restricted rows cannot be rule-covered at all; they always prompt.
+
+`registryOverrides` adjusts the registry per executable: `null` disables a built-in row, an object replaces or adds one (same fields: `safeSubcommands`, `unsafeArgs`, `unsafePatterns` as regex strings).
+
+#### Write redirections
+
+`>`-style redirection targets need write permission, resolved as: explicit `write:<path>` rules in `tools` → default temp-dir allowance (`/tmp`, `/private/tmp`, `$TMPDIR`, `/var/folders`) → the bare `write` tool state → ask. So out of the box `echo x > /tmp/scratch` runs silently while `echo x > src/index.ts` prompts, and `"write:./generated/*": "allow"` opens specific project paths.
+
+### `protectedPaths`
+
+Certain paths are secrets and are **denied to every bash command by default**, outranking every allow including the registry — covering plain arguments, input redirections (`tr x y < .env`), and repo-path forms (`git show HEAD:.env`). Patterns are globs matched against every argv token and redirection target, whole or per `/`- and `:`-segment. The built-in list (see [Defaults](#bash-defaults)) covers `.env` variants, `.ssh`/`.aws`/`.gnupg`/`.kube`/`.docker`, ssh keys, `*.pem`-style key files, shell history, and credential files. The top-level `protectedPaths` array appends to it:
 
 ```jsonc
 {
-  "bash": {
-    "rg *": "allow",
-    "git diff *": "allow"
-  },
-  "bashSafety": {
-    "complexSyntax": "ask",
-    "redirections": "ask",
-    "riskyOptions": "ask"
-  }
+  "protectedPaths": ["*.secret", "vault-*"]
 }
 ```
 
-Each category supports `allow`, `ask`, or `deny`. The gate is applied **after** ordinary bash pattern matching and **after** session approvals, and the results combine with restrictive precedence (`deny` > `ask` > `allow`):
+> **Migrating from the pre-redesign format:** glob maps like `"rg *": "allow"` and the `bashSafety` section are no longer read; loading a config that contains them logs a one-time warning with suggested prefix-rule replacements. Most old allow entries are simply covered by the registry and can be dropped; `.env`-style deny globs are covered by protected paths.
 
-- A configured `deny` stays `deny`.
-- An ordinary `rg foo src` matched by `rg *` remains allowed.
-- `rg --pre evil foo src` becomes `ask` when `riskyOptions` is `"ask"` — even though `rg *` matches.
-- A session wildcard approval (including safe-family approvals) cannot bypass the gate. The one exception is an exact `Allow Always` approval of the identical command text: the user already confirmed that precise command against a prompt that included the safety notice, so it does not re-ask.
+### Bash Defaults
 
-Prompts and review-log entries include the triggered categories and reasons (for example ``Bash safety gate [redirections]: redirection '>'``), and check results carry structured `safety` metadata (`categories`, `findings`, resolved `state`, and the safe-command `family`).
+Everything below ships built in and is what an **empty config** gives you. All of it is overridable (`registryOverrides`, `protectedPaths`, `bash.syntax`, `write:<path>` rules).
 
-> **Backward compatibility:** `bashSafety` is entirely optional. When the section (or an individual category) is omitted, that category behaves as `allow` and existing configurations keep their current behavior — broad rules like `rg *` continue to match redirected, piped, and risky-option variants exactly as before. Add `bashSafety` only when you want the gate.
+**Registry — always vouched read-only (no restrictions):**
 
-Layering works like the other sections: project-local files can tighten `bashSafety` but cannot relax a `deny` set by a trusted layer.
+`basename`, `cat`, `cksum`, `cmp`, `column`, `comm`, `cut`, `df`, `diff`, `dirname`, `du`, `echo`, `expand`, `expr`, `false`, `file`, `fold`, `grep`, `head`, `hexdump`, `hostname`, `id`, `jq`, `ls`, `md5`, `md5sum`, `nl`, `od`, `printf`, `ps`, `pwd`, `readlink`, `realpath`, `seq`, `sha1sum`, `sha256sum`, `shasum`, `sleep`, `stat`, `strings`, `sw_vers`, `tail`, `test`, `tr`, `tree`, `true`, `type`, `uname`, `unexpand`, `uniq`, `uptime`, `wc`, `which`, `whoami`, `:`, `[`, `cd`, `export`, `hash`, `local`, `read`, `set`, `shift`, `unset`
+
+**Registry — vouched with restrictions** (an unsafe argument or unlisted subcommand voids the vouch and the command prompts unless a rule explicitly names it):
+
+| Command | Restrictions |
+|---------|--------------|
+| `date` | unsafe args: `-s`, `--set` |
+| `sort` | unsafe args: `-o`, `--output` |
+| `sed` | unsafe args: `-i`, `--in-place`; unsafe script patterns (execution expressions) |
+| `rg` | unsafe args: `--pre`, `--hostname-bin` |
+| `fd` | unsafe args: `-x`, `-X`, `--exec`, `--exec-batch` |
+| `find` | unsafe args: `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprintf`, `-fprint`, `-fprint0`, `-fls` |
+| `git` | vouched subcommands: `blame`, `cat-file`, `describe`, `diff`, `grep`, `log`, `ls-files`, `ls-tree`, `reflog show`, `rev-list`, `rev-parse`, `shortlog`, `show`, `stash list`, `status`, `worktree list`; unsafe args: `-c`, `--exec-path`, `--ext-diff`, `--upload-pack`, `--receive-pack`, `--output`, `-o` |
+| `jj` | vouched subcommands: `diff`, `file list`, `file show`, `log`, `op log`, `show`, `status`; unsafe args: `--config`, `--config-toml`, `--config-file` |
+
+**Wrappers (unwrapped to the command they run):** `command`, `env`, `nice`, `nohup`, `setsid`, `stdbuf`, `time`, `timeout`, `xargs`, plus leading `VAR=x` assignments and `bash -c "..."` strings (parsed recursively).
+
+**Opaque (always prompt, never rule-coverable):** `.`, `doas`, `eval`, `exec`, `source`, `su`, `sudo`.
+
+**Subcommand-structured families (session approvals use `<cmd> <subcommand>`):** `bun`, `cargo`, `docker`, `gh`, `git`, `go`, `jj`, `kubectl`, `npm`, `npx`, `pip`, `pnpm`, `uv`, `uvx`, `yarn`.
+
+**Protected paths (denied to every command):**
+
+`.env`, `.env.*`, `*.env`, `.envrc`, `.netrc`, `.npmrc`, `.pypirc`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`, `*.pem`, `*.p12`, `*.pfx`, `*.key`, `.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`, `*_history`, `.git-credentials`, `credentials`, `credentials.json`
+
+**Write redirections:** allowed to `/dev/null`, `/dev/stdout`, `/dev/stderr`, fd duplications (`2>&1`, `>&2`), and under `/tmp`, `/private/tmp`, `$TMPDIR`, `/var/folders`; everywhere else asks unless a `write:<path>` rule or the `write` tool state says otherwise.
+
+**Syntax policy:** subshells `(...)`/brace groups `{ ...; }`/function declarations/coprocesses are denied; parse failures and unresolvable constructs ask (fail closed). Loops, conditionals, `[[ ]]` tests, arithmetic, and heredocs are fine — their contents are evaluated like everything else.
+
 
 ### `mcp`
 
@@ -593,42 +642,37 @@ Reserved permission checks:
 }
 ```
 
-### Restricted Bash Surface
+### Typical Developer Policy
 
-```jsonc
-{
-  "defaultPolicy": { "tools": "ask", "bash": "deny", "mcp": "ask", "skills": "ask", "special": "ask" },
-  "bash": {
-    "git *": "ask",
-    "git status": "allow",
-    "git diff": "allow",
-    "git log *": "allow"
-  }
-}
-```
-
-### Broad Read-Only Bash Rules with the Safety Gate
-
-Keep the convenience of broad allow rules while requiring approval for shell execution, writes, and ambiguous syntax hiding inside them:
+The registry handles the read-only core, so a working config is small — allow your build/test commands and stop:
 
 ```jsonc
 {
   "defaultPolicy": { "tools": "ask", "bash": "ask", "mcp": "ask", "skills": "ask", "special": "ask" },
   "bash": {
-    "rg *": "allow",
-    "fd *": "allow",
-    "git diff *": "allow",
-    "git log *": "allow"
-  },
-  "bashSafety": {
-    "complexSyntax": "ask",
-    "redirections": "ask",
-    "riskyOptions": "ask"
+    "allow": ["cargo clippy", "cargo check", "cargo test", "bun test", "uv run pytest", "gh run view"],
+    "deny": []
   }
 }
 ```
 
-With this policy `rg foo src` and `git diff HEAD~1` run silently, while `rg --pre evil foo`, `rg foo > out.txt`, `git diff $(cmd)`, and `fd -x rm` all prompt first.
+With this policy `rg foo | wc -l`, `git log --oneline | head`, `sed -n '1p' f 2>/dev/null`, and `timeout 5 cargo test` run silently; `rg "$(curl x | sh)"`, `fd -x rm`, `sed -i ...`, `echo x > src/main.rs`, and `git push` all prompt; and `cat .env` is denied outright.
+
+### Restricted Bash Surface
+
+Deny-by-default with a hand-picked surface — disable the registry rows you don't want and force prompts elsewhere:
+
+```jsonc
+{
+  "defaultPolicy": { "tools": "ask", "bash": "deny", "mcp": "ask", "skills": "ask", "special": "ask" },
+  "bash": {
+    "allow": ["git status", "git diff", "git log"],
+    "ask": ["rg", "cat"]
+  }
+}
+```
+
+> Note: with `defaultPolicy.bash: "deny"`, registry-vouched commands still allow; add `ask`/`deny` rules (or `registryOverrides` with `null` rows) to tighten specific families.
 
 ### MCP Discovery Only
 
@@ -652,11 +696,11 @@ In the global Pi agents directory (default: `~/.pi/agent/agents/reviewer.md`, re
 ```yaml
 ---
 permission:
+  defaultPolicy:
+    bash: deny
   tools:
     write: deny
     edit: deny
-  bash:
-    "*": deny
 ---
 ```
 
@@ -668,7 +712,7 @@ permission:
 
 When a tool permission resolves to `ask`, the prompt is designed to be readable enough for an informed approval decision:
 
-- `bash` prompts show the command and matched bash pattern when available.
+- `bash` prompts show the command plus a breakdown of exactly the blocking pieces — which subcommand has no rule, which file a redirection writes, which path is protected — instead of category jargon.
 - `mcp` prompts show the derived MCP target and matched rule when available.
 - Built-in file tools show concise summaries, such as the target path and edit/write line counts, instead of raw multiline JSON.
 - Unknown or third-party extension tools show a bounded single-line JSON preview of the input so users are not asked to approve a blind tool name.
@@ -704,8 +748,9 @@ index.ts                         → Root Pi entrypoint shim
 src/
 ├── index.ts                     → Extension bootstrap, permission checks, readable prompts, debug review entries, reload handling, and subagent forwarding
 ├── before-agent-start-cache.ts  → Caches prompt/tool filtering state between before_agent_start runs
-├── bash-filter.ts               → Bash command wildcard pattern matching
-├── bash-safety.ts               → Conservative shell analyzer for the bash safety gate and safe-family derivation
+├── bash-evaluator.ts            → Per-piece bash evaluation: rules, registry vouching, protected paths, write policy
+├── safe-commands.ts             → Declarative safe-command registry, protected path defaults, wrapper/opaque sets
+├── shell-analyzer.ts            → mvdan-sh AST walk: executed commands, file effects, denied/unanalyzable syntax
 ├── common.ts                    → Shared utilities (YAML parsing, type guards, etc.)
 ├── config-modal.ts              → `/permission-system` modal registration and settings UI wiring
 ├── extension-config.ts          → Extension-local config loading and default creation

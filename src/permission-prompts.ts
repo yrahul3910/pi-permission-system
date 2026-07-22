@@ -1,6 +1,6 @@
 import { getNonEmptyString, toRecord } from "./common.js";
 import { safeJsonStringify } from "./logging.js";
-import type { BashSafetyAssessment, PermissionCheckResult } from "./types.js";
+import type { BashEvaluation, PermissionCheckResult } from "./types.js";
 import type { SkillPromptEntry } from "./skill-prompt-sanitizer.js";
 
 const STRUCTURED_EDIT_OPERATION_NAMES = new Set(["replace", "append", "prepend", "delete", "replace_text"]);
@@ -45,24 +45,30 @@ export function formatUnknownToolReason(toolName: string, availableToolNames: re
   return `Tool '${toolName}' is not registered in this runtime and was blocked before permission checks.${mcpHint} Registered tools: ${availableList}.`;
 }
 
-const BASH_SAFETY_NOTICE_MAX_DETAILS = 3;
+const BASH_EVALUATION_NOTICE_MAX_PIECES = 4;
+const BASH_PIECE_DISPLAY_MAX_LENGTH = 60;
 
 /**
- * Human-readable summary of why the bash safety gate restricted a command.
- * Returns null when the gate did not restrict the command (no findings, or the
- * configured requirement resolved to "allow").
+ * Human-readable breakdown of the pieces of a bash command that are not
+ * allowed: unknown commands, file writes, protected paths, denied or
+ * unanalyzable syntax. Returns null when everything resolved to allow.
  */
-export function formatBashSafetyNotice(safety: BashSafetyAssessment | undefined): string | null {
-  if (!safety || safety.state === "allow" || safety.findings.length === 0) {
+export function formatBashEvaluationNotice(evaluation: BashEvaluation | undefined): string | null {
+  if (!evaluation || evaluation.state === "allow" || evaluation.pieces.length === 0) {
     return null;
   }
 
-  const details = safety.findings
-    .slice(0, BASH_SAFETY_NOTICE_MAX_DETAILS)
-    .map((finding) => finding.detail);
-  const omitted = safety.findings.length - details.length;
-  const omittedSuffix = omitted > 0 ? `; +${omitted} more` : "";
-  return `Bash safety gate [${safety.categories.join(", ")}]: ${details.join("; ")}${omittedSuffix}.`;
+  const shown = evaluation.pieces.slice(0, BASH_EVALUATION_NOTICE_MAX_PIECES);
+  const lines = shown.map((piece) => {
+    const label = piece.state === "deny" ? "denied" : "needs approval";
+    const display = truncateInlineText(piece.display.replace(/\s+/g, " ").trim(), BASH_PIECE_DISPLAY_MAX_LENGTH);
+    return `- ${label}: '${display}' (${piece.reason})`;
+  });
+  const omitted = evaluation.pieces.length - shown.length;
+  if (omitted > 0) {
+    lines.push(`- ...and ${omitted} more`);
+  }
+  return lines.join("\n");
 }
 
 function formatPermissionHardStopHint(result: PermissionCheckResult): string {
@@ -94,12 +100,12 @@ export function formatDenyReason(result: PermissionCheckResult, agentName?: stri
     parts.push(`(matched '${result.matchedPattern}')`);
   }
 
-  const safetyNotice = result.toolName === "bash" && result.safety?.state === "deny"
-    ? formatBashSafetyNotice(result.safety)
+  const evaluationNotice = result.toolName === "bash" && result.bashEvaluation?.state === "deny"
+    ? formatBashEvaluationNotice(result.bashEvaluation)
     : null;
-  const safetySuffix = safetyNotice ? ` ${safetyNotice}` : "";
+  const evaluationSuffix = evaluationNotice ? `\n${evaluationNotice}\n` : "";
 
-  return `${parts.join(" ")}.${safetySuffix} ${formatPermissionHardStopHint(result)}`;
+  return `${parts.join(" ")}.${evaluationSuffix} ${formatPermissionHardStopHint(result)}`;
 }
 
 export function formatUserDeniedReason(result: PermissionCheckResult, denialReason?: string): string {
@@ -296,9 +302,9 @@ export function formatAskPrompt(result: PermissionCheckResult, agentName?: strin
 
   if (result.toolName === "bash") {
     const patternInfo = result.matchedPattern ? ` (matched '${result.matchedPattern}')` : "";
-    const safetyNotice = formatBashSafetyNotice(result.safety);
-    const safetyInfo = safetyNotice ? ` ${safetyNotice}` : "";
-    return `${subject} requested bash command '${result.command || ""}'${patternInfo}.${safetyInfo} Allow this command?`;
+    const evaluationNotice = formatBashEvaluationNotice(result.bashEvaluation);
+    const evaluationInfo = evaluationNotice ? `\n${evaluationNotice}\n` : " ";
+    return `${subject} requested bash command '${result.command || ""}'${patternInfo}.${evaluationInfo}Allow this command?`;
   }
 
   if ((result.source === "mcp" || result.toolName === "mcp") && result.target) {

@@ -1,6 +1,6 @@
 {
   "name": "pi-permission-system",
-  "version": "0.8.0-patch.1",
+  "version": "0.8.0-patch.2",
   "description": "Permission enforcement extension for the Pi coding agent.",
   "type": "module",
   "main": "./index.ts",
@@ -22,7 +22,7 @@
     "build": "npm run typecheck",
     "lint": "npm run typecheck",
     "validate:artifacts": "node ./scripts/validate-artifacts.mjs",
-    "test": "npx --yes tsx ./tests/approved-fixes.test.ts && npx --yes tsx ./tests/bash-safety.test.ts && npx --yes tsx ./tests/config-modal.test.ts && npx --yes tsx ./tests/config-modal-theme-red.test.ts && npx --yes tsx ./tests/config-preservation-red.test.ts && npx --yes tsx ./tests/desktop-notification.test.ts && npx --yes tsx ./tests/edge-red-agent-name-traversal.test.ts && npx --yes tsx ./tests/edit-decision-deduplication-red.test.ts && npx --yes tsx ./tests/edit-prompt-compaction-red.test.ts && npx --yes tsx ./tests/permission-persistence-red.test.ts && npx --yes tsx ./tests/permission-system.test.ts && npx --yes tsx ./tests/session-permanent-permission.test.ts && npx --yes tsx ./tests/turn-runtime.test.ts && npx --yes tsx ./tests/types-shims-coverage.test.ts && npx --yes tsx ./tests/wildcard-multiline.test.ts && npx --yes tsx ./tests/wildcard-redos.test.ts",
+    "test": "npx --yes tsx ./tests/approved-fixes.test.ts && npx --yes tsx ./tests/shell-analyzer.test.ts && npx --yes tsx ./tests/bash-evaluation-corpus.test.ts && npx --yes tsx ./tests/config-modal.test.ts && npx --yes tsx ./tests/config-modal-theme-red.test.ts && npx --yes tsx ./tests/config-preservation-red.test.ts && npx --yes tsx ./tests/desktop-notification.test.ts && npx --yes tsx ./tests/edge-red-agent-name-traversal.test.ts && npx --yes tsx ./tests/edit-decision-deduplication-red.test.ts && npx --yes tsx ./tests/edit-prompt-compaction-red.test.ts && npx --yes tsx ./tests/permission-persistence-red.test.ts && npx --yes tsx ./tests/permission-system.test.ts && npx --yes tsx ./tests/session-permanent-permission.test.ts && npx --yes tsx ./tests/turn-runtime.test.ts && npx --yes tsx ./tests/types-shims-coverage.test.ts && npx --yes tsx ./tests/wildcard-multiline.test.ts && npx --yes tsx ./tests/wildcard-redos.test.ts",
     "test:issue23": "npx --yes tsx ./tests/session-permanent-permission.test.ts",
     "check": "npm run lint && npm run validate:artifacts && npm run test",
     "postinstall": "node -e \"const fs=require('fs'),cp=require('child_process'),p=require('path');const cwd=process.cwd();const normalized=cwd.split(p.sep).join('/');if(!normalized.includes('/.pi/agent/extensions/'))process.exit(0);const s=p.resolve(cwd,'../../scripts/patch-vulnerable-deps.mjs');if(!fs.existsSync(s))process.exit(0);const r=cp.spawnSync(process.execPath,[s,'--target',cwd,'--quiet'],{stdio:'inherit'});process.exit(r.status||0)\""
@@ -61,13 +61,14 @@
     ]
   },
   "peerDependencies": {
-    "@sinclair/typebox": "^0.34.49",
     "@earendil-works/pi-ai": "^0.74.0 || ^0.75.0 || ^0.78.0 || ^0.79.0 || ^0.80.0",
     "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0 || ^0.78.0 || ^0.79.0 || ^0.80.0",
-    "@earendil-works/pi-tui": "^0.74.0 || ^0.75.0 || ^0.78.0 || ^0.79.0 || ^0.80.0"
+    "@earendil-works/pi-tui": "^0.74.0 || ^0.75.0 || ^0.78.0 || ^0.79.0 || ^0.80.0",
+    "@sinclair/typebox": "^0.34.49"
   },
   "dependencies": {
-    "jsonc-parser": "^3.3.1"
+    "jsonc-parser": "^3.3.1",
+    "mvdan-sh": "^0.10.1"
   },
   "overrides": {
     "protobufjs": "7.6.3",

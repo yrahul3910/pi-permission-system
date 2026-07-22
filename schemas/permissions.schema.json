@@ -11,7 +11,12 @@
     "defaultPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tools", "bash", "mcp", "skills"],
+      "required": [
+        "tools",
+        "bash",
+        "mcp",
+        "skills"
+      ],
       "properties": {
         "tools": {
           "$ref": "#/$defs/permissionState"
@@ -35,25 +40,79 @@
       "$ref": "#/$defs/permissionMap"
     },
     "bash": {
-      "$ref": "#/$defs/permissionMap"
-    },
-    "bashSafety": {
-      "description": "Bash safety gate policy. Applied after ordinary bash pattern matching and session approvals with restrictive precedence (deny > ask > allow), so broad allow rules such as `rg *` do not silently authorize shell execution, writes, or ambiguous syntax. Omitting this object (or any category) keeps that category at `allow`, preserving pre-gate behavior.",
+      "description": "Bash rules as word-prefix lists matched against the normalized argv of every command a bash invocation actually executes (including inside $(...), backticks, bash -c strings, and unwrapped wrappers like timeout/env/xargs). \"git diff\" covers `git diff --stat HEAD~3`; \"rg\" covers any rg invocation. Read-only commands are allowed by default via the built-in safe-command registry; precedence per command is deny > protected paths > ask > allow/registry > defaultPolicy.bash.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "complexSyntax": {
-          "description": "Command/process substitution, pipes, `&&`/`||`/`;`/`&`, unquoted newlines separating commands, subshell parentheses, and malformed or unanalyzable syntax (fails closed).",
-          "$ref": "#/$defs/permissionState"
+        "allow": {
+          "$ref": "#/$defs/bashRuleList",
+          "description": "Prefix rules that allow matching commands (subject to protected paths, write policy, and the unsafe-argument guard)."
         },
-        "redirections": {
-          "description": "Redirection operators such as `>`, `>>`, `<`, `<<`, `<<<`, `2>`, `>&`, `<&`, `&>`, `&>>`.",
-          "$ref": "#/$defs/permissionState"
+        "ask": {
+          "$ref": "#/$defs/bashRuleList",
+          "description": "Prefix rules that force a prompt even when the registry vouches for the command."
         },
-        "riskyOptions": {
-          "description": "Options of otherwise-safe tools that execute commands or write files: `rg --pre`, `fd --exec`/`--exec-batch`/`-x`/`-X`, `sed -i`/`--in-place` and `s///e` execution expressions, `git --ext-diff`.",
-          "$ref": "#/$defs/permissionState"
+        "deny": {
+          "$ref": "#/$defs/bashRuleList",
+          "description": "Prefix rules that deny matching commands outright."
+        },
+        "syntax": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "subshells": {
+              "$ref": "#/$defs/permissionState",
+              "description": "Subshells `(...)` and brace groups `{ ...; }`. Default: deny."
+            },
+            "unanalyzable": {
+              "$ref": "#/$defs/permissionState",
+              "description": "Parse failures and constructs the analyzer cannot resolve (fails closed). Default: ask."
+            }
+          }
+        },
+        "registryOverrides": {
+          "description": "Safe-command registry adjustments keyed by executable. `null` disables a built-in row; an object replaces or adds one.",
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "safeSubcommands": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "unsafeArgs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "unsafePatterns": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          }
         }
+      }
+    },
+    "protectedPaths": {
+      "description": "Additional protected path patterns (globs matched against every argv token and redirection target, whole or per `/`- and `:`-segment). Matches deny the command, outranking every allow including the registry. Extends built-ins like .env, .ssh, id_rsa*, *.pem.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
       }
     },
     "mcp": {
@@ -84,11 +143,17 @@
       }
     }
   },
-  "required": ["defaultPolicy"],
+  "required": [
+    "defaultPolicy"
+  ],
   "$defs": {
     "permissionState": {
       "type": "string",
-      "enum": ["allow", "deny", "ask"]
+      "enum": [
+        "allow",
+        "deny",
+        "ask"
+      ]
     },
     "permissionMap": {
       "type": "object",
@@ -98,6 +163,13 @@
       },
       "additionalProperties": {
         "$ref": "#/$defs/permissionState"
+      }
+    },
+    "bashRuleList": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
       }
     }
   }

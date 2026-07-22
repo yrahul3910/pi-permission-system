@@ -299,3 +299,18 @@ declare module "@earendil-works/pi-tui" {
   export function truncateToWidth(text: string, width: number, filler?: string, preferEnd?: boolean): string;
   export function visibleWidth(text: string): number;
 }
+
+declare module "mvdan-sh" {
+  export interface MvdanSyntax {
+    NewParser(...options: unknown[]): { Parse(source: string, name: string): Record<string, any> };
+    Walk(node: Record<string, any>, visitor: (node: Record<string, any> | null) => boolean): void;
+    NodeType(node: Record<string, any>): string;
+    Variant(lang: unknown): unknown;
+    IsIncomplete(error: unknown): boolean;
+    LangBash: unknown;
+    LangPOSIX: unknown;
+  }
+
+  const mvdanSh: { syntax: MvdanSyntax };
+  export default mvdanSh;
+}
