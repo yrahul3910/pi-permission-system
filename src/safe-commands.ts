@@ -218,7 +218,10 @@ function normalizeStringArray(value: unknown): string[] | undefined {
     return undefined;
   }
   const entries = value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
-  return entries.length > 0 ? entries.map((entry) => entry.trim()) : [];
+  // An explicitly empty list is treated as absent: `unsafeArgs: []` must not
+  // silently mark the row restricted (which fails closed on expansion
+  // arguments), and `safeSubcommands: []` must not make it never vouch.
+  return entries.length > 0 ? entries.map((entry) => entry.trim()) : undefined;
 }
 
 export function compileRegistry(overrides: unknown): CompiledRegistry {

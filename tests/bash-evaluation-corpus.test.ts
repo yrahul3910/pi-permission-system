@@ -164,6 +164,7 @@ runTest("CORPUS: registryOverrides can disable and extend rows", () => {
       registryOverrides: {
         cat: null,
         mytool: { unsafeArgs: ["--run"] },
+        head: { unsafeArgs: [], safeSubcommands: [] }, // empty lists = absent
       },
     },
   }), "utf-8");
@@ -172,6 +173,9 @@ runTest("CORPUS: registryOverrides can disable and extend rows", () => {
     assert.equal(overridden.checkPermission("bash", { command: "cat file.txt" }).state, "ask");
     assert.equal(overridden.checkPermission("bash", { command: "mytool file" }).state, "allow");
     assert.equal(overridden.checkPermission("bash", { command: "mytool --run x" }).state, "ask");
+    // Explicitly empty override lists must not restrict the row: head still
+    // vouches, including with expansion arguments.
+    assert.equal(overridden.checkPermission("bash", { command: "head $f" }).state, "allow");
   } finally {
     rmSync(overrideDir, { recursive: true, force: true });
   }
