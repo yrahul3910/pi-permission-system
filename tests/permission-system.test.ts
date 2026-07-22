@@ -110,11 +110,18 @@ type GlobalWithPermissionSystem = typeof globalThis & {
   __piPermissionSystem?: PermissionSystemRuntimeApi;
 };
 
+type AppendedEntry = {
+  customType: string;
+  data: unknown;
+};
+
 type ExtensionHarness = {
   baseDir: string;
   cwd: string;
   handlers: Record<string, MockHandler>;
   registeredEvents: string[];
+  entryRendererTypes: string[];
+  appendedEntries: AppendedEntry[];
   prompts: string[];
   debugPath: string;
   cleanup: () => Promise<void>;
@@ -181,6 +188,8 @@ function createToolCallHarness(
   const prompts: string[] = [];
   const handlers: Record<string, MockHandler> = {};
   const registeredEvents: string[] = [];
+  const entryRendererTypes: string[] = [];
+  const appendedEntries: AppendedEntry[] = [];
   const extensionConfigPath = join(baseDir, "extension-config.json");
   const logsDir = join(baseDir, "extension-logs");
   const debugPath = join(logsDir, "pi-permission-system-debug.jsonl");
@@ -207,6 +216,12 @@ function createToolCallHarness(
         handlers[name] = handler;
       },
       registerCommand: (): void => {},
+      registerEntryRenderer: (customType: string): void => {
+        entryRendererTypes.push(customType);
+      },
+      appendEntry: (customType: string, data: unknown): void => {
+        appendedEntries.push({ customType, data });
+      },
       getAllTools: (): Array<{ name: string }> => toolNames.map((name) => ({ name })),
       setActiveTools: (): void => {},
       registerProvider: (): void => {},
@@ -227,6 +242,8 @@ function createToolCallHarness(
     cwd,
     handlers,
     registeredEvents,
+    entryRendererTypes,
+    appendedEntries,
     prompts,
     debugPath,
     cleanup: async (): Promise<void> => {
@@ -340,6 +357,44 @@ await runAsyncTest("Extension keeps the working runtime through tool-call turns 
       createMockContext(harness.cwd, harness.prompts, { hasUI: true, workingMessages }),
     ));
     assert.equal(workingMessages.at(-1), undefined);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+await runAsyncTest("Extension inserts thought duration only before a final assistant response", async () => {
+  const harness = createToolCallHarness(
+    { defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" } },
+    [],
+    { hasUI: true },
+  );
+
+  try {
+    assert.equal(harness.entryRendererTypes.includes("pi-permission-system:thought-duration"), true);
+    const ctx = createMockContext(harness.cwd, harness.prompts, { hasUI: true });
+    await Promise.resolve(harness.handlers.agent_start?.({}, ctx));
+
+    await Promise.resolve(harness.handlers.message_end?.({
+      message: {
+        role: "assistant",
+        stopReason: "toolUse",
+        content: [{ type: "toolCall", id: "call-1" }],
+      },
+    }, ctx));
+    assert.equal(harness.appendedEntries.length, 0);
+
+    await Promise.resolve(harness.handlers.message_end?.({
+      message: {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "Done" }],
+      },
+    }, ctx));
+    assert.equal(harness.appendedEntries.length, 1);
+    assert.equal(harness.appendedEntries[0]?.customType, "pi-permission-system:thought-duration");
+    assert.equal(typeof (harness.appendedEntries[0]?.data as { elapsedMs?: unknown }).elapsedMs, "number");
+
+    await Promise.resolve(harness.handlers.agent_end?.({}, ctx));
   } finally {
     await harness.cleanup();
   }

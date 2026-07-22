@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Added an active agent-run runtime to Pi's `Working...` spinner. The runtime persists through tool-call turns until the final response, updates once per second, and excludes time spent awaiting local or forwarded permission decisions.
+- Added a gray `Thought for <time>` annotation before the final assistant response on Pi versions with entry-renderer support.
 
 ## [0.8.0-patch.1] - 2026-07-10
 

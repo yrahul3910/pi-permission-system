@@ -109,6 +109,7 @@ If you are coming from OpenCode, you usually do **not** need to rewrite your who
 - **Subagent Permission Forwarding** — Forwards `ask` confirmations from non-UI subagents back to the main interactive session
 - **Runtime YOLO Control** — Lets users toggle yolo mode from the settings modal and lets other extensions toggle it through the runtime API
 - **Turn Runtime Indicator** — Adds active agent-run runtime to Pi's `Working...` spinner through tool calls, excluding time spent waiting for permission decisions
+- **Thought Duration Annotation** — Adds a gray `Thought for <time>` line immediately before the final assistant response
 - **File-Based Debug Logging** — Writes verbose diagnostics and permission request/denial review entries to one debug file when enabled in `config.json`, including the responsible agent and raw tool-call input
 - **JSON Schema Validation** — Full schema for editor autocomplete and config validation
 - **External Directory Guard** — Enforces `special.external_directory` for path-bearing file tools that target paths outside the active working directory
@@ -179,6 +180,7 @@ The extension integrates via Pi's lifecycle hooks:
 | `before_agent_start` | Filters active tools, removes denied tool entries from the system prompt, and hides denied skills |
 | `tool_call`          | Enforces permissions for every tool invocation                                            |
 | `agent_start` / `agent_end` | Shows active runtime in Pi's `Working...` spinner until the final response is sent     |
+| `message_end`        | Inserts the gray thought-duration annotation before a final assistant response            |
 | `input`              | Tracks explicit `/skill:<name>` requests so user-invoked skill loads can proceed while agent-initiated reads remain policy-gated |
 
 **Additional behaviors:**
@@ -192,6 +194,7 @@ The extension integrates via Pi's lifecycle hooks:
 - `read` calls under global and project Pi skill directories are checked against `skills` policy even when the skill entry is inferred from the path rather than an active prompt block.
 - Structured edit payloads are summarized by operation and line count in prompts so permission decisions do not require raw multiline JSON.
 - The runtime spans tool-call turns and freezes while any local or forwarded permission decision is awaiting a response, so approval wait time is not counted.
+- On Pi versions with entry-renderer support, a gray `Thought for <time>` annotation is inserted immediately before the final response without adding anything to LLM context.
 
 ## Configuration
 

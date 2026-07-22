@@ -1,4 +1,5 @@
 import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type BeforeAgentStartEvent, type InputEvent, type ResourcesDiscoverEvent, type SessionStartEvent, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -26,6 +27,7 @@ import {
 } from "./permission-dialog.js";
 import {
   DEFAULT_EXTENSION_CONFIG,
+  EXTENSION_ID,
   getPermissionSystemConfigPath,
   loadPermissionSystemConfig,
   normalizePermissionSystemConfig,
@@ -79,7 +81,7 @@ import {
 } from "./skill-prompt-sanitizer.js";
 import { sanitizeAvailableToolsSection } from "./system-prompt-sanitizer.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "./tool-registry.js";
-import { TurnRuntimeTracker } from "./turn-runtime.js";
+import { formatTurnRuntime, TurnRuntimeTracker } from "./turn-runtime.js";
 import type { PermissionCheckResult } from "./types.js";
 import { PERMISSION_SYSTEM_STATUS_KEY, syncPermissionSystemStatus } from "./status.js";
 import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "./yolo-mode.js";
@@ -153,7 +155,20 @@ type CachedPermissionPromptDecision = {
   decisionPromise: Promise<PermissionPromptDecision>;
 };
 
+type ThoughtDurationEntryData = {
+  elapsedMs: number;
+};
+
+type ThoughtDurationEntry = {
+  data?: unknown;
+};
+
+type ThoughtDurationTheme = {
+  fg(color: string, text: string): string;
+};
+
 const PERMISSION_REQUEST_EVENT_CHANNEL = "pi-permission-system:permission-request";
+export const THOUGHT_DURATION_ENTRY_TYPE = `${EXTENSION_ID}:thought-duration`;
 const DEFAULT_FORWARDED_PERMISSION_PROMPT_TIMEOUT_REASON = "permission_timeout: forwarded permission prompt was not answered within the configured timeout.";
 const PATH_BEARING_TOOLS = new Set(["read", "write", "edit", "find", "grep", "ls"]);
 const FILESYSTEM_TOOL_NAME_SUFFIXES = ["read", "write", "edit", "find", "grep", "search", "list", "ls"] as const;
@@ -311,6 +326,28 @@ function getEventInput(event: unknown): unknown {
   }
 
   return {};
+}
+
+function isFinalAssistantMessage(message: unknown): boolean {
+  const record = toRecord(message);
+  if (
+    record.role !== "assistant"
+    || record.stopReason === "error"
+    || record.stopReason === "aborted"
+    || record.stopReason === "toolUse"
+  ) {
+    return false;
+  }
+
+  return !Array.isArray(record.content)
+    || !record.content.some((content: unknown) => toRecord(content).type === "toolCall");
+}
+
+function getThoughtDurationElapsedMs(data: unknown): number {
+  const elapsedMs = toRecord(data).elapsedMs;
+  return typeof elapsedMs === "number" && Number.isFinite(elapsedMs)
+    ? Math.max(0, elapsedMs)
+    : 0;
 }
 
 function getActiveAgentName(ctx: ExtensionContext): string | null {
@@ -1535,6 +1572,43 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     toggleYoloMode: (options?: YoloModeControlOptions) => setYoloModeFromRuntimeApi(!extensionConfig.yoloMode, options),
   });
 
+  // Entry renderers and their live `entry_appended` events arrived after some
+  // supported Pi versions. Feature-detect them so older runtimes keep their
+  // permission behavior without failing to load this extension.
+  let canRenderThoughtDuration = false;
+  try {
+    const registerEntryRenderer = toRecord(pi).registerEntryRenderer;
+    if (typeof registerEntryRenderer === "function") {
+      registerEntryRenderer.call(
+        pi,
+        THOUGHT_DURATION_ENTRY_TYPE,
+        (entry: ThoughtDurationEntry, _options: unknown, theme: ThoughtDurationTheme) => {
+          const elapsedMs = getThoughtDurationElapsedMs(entry.data);
+          return new Text(theme.fg("dim", `Thought for ${formatTurnRuntime(elapsedMs)}`), 1, 0);
+        },
+      );
+      canRenderThoughtDuration = true;
+    }
+  } catch {
+    // Rendering this optional annotation must never disable permission checks.
+  }
+
+  const appendThoughtDuration = (elapsedMs: number): void => {
+    if (!canRenderThoughtDuration) {
+      return;
+    }
+
+    const appendEntry = toRecord(pi).appendEntry;
+    if (typeof appendEntry !== "function") {
+      return;
+    }
+
+    const data: ThoughtDurationEntryData = {
+      elapsedMs: getThoughtDurationElapsedMs({ elapsedMs }),
+    };
+    appendEntry.call(pi, THOUGHT_DURATION_ENTRY_TYPE, data);
+  };
+
   let modelOptionCompatibilityRegistration: Promise<void> | null = null;
   const ensureModelOptionCompatibilityRegistered = (): Promise<void> => {
     if (!modelOptionCompatibilityRegistration) {
@@ -1967,6 +2041,16 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   pi.on("agent_end", async () => {
     turnRuntime.stop();
+  });
+
+  pi.on("message_end", async (event) => {
+    if (!turnRuntime.active || !isFinalAssistantMessage(event.message)) {
+      return;
+    }
+
+    // Pi renders appended custom entries before the still-streaming final
+    // assistant message, so this appears as the requested gray preface.
+    appendThoughtDuration(turnRuntime.elapsedMs);
   });
 
   pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx: ExtensionContext) => {
