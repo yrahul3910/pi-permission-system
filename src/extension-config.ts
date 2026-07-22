@@ -145,10 +145,14 @@ export function loadPermissionSystemConfig(configPath = getPermissionSystemConfi
 /**
  * Extension-managed keys that are written/updated by savePermissionSystemConfig.
  * All other keys in the config file are preserved as-is.
+ *
+ * `yoloMode` is deliberately NOT in this list: yolo mode is session-scoped
+ * runtime state. Toggling it must never propagate to other sessions through the
+ * shared config file, so saves leave any existing `yoloMode` key untouched
+ * (a manually edited value simply acts as the startup default for new sessions).
  */
 const EXTENSION_CONFIG_KEYS: readonly (keyof PermissionSystemExtensionConfig)[] = [
   "debug",
-  "yoloMode",
   "desktopNotifications",
   "forwardedPromptTimeoutSeconds",
 ];
@@ -202,9 +206,9 @@ function mergeExtensionFields(
     merged[key] = existing[key];
   }
 
+  // `yoloMode` is intentionally omitted — see EXTENSION_CONFIG_KEYS above.
   const normalizedRecord: Record<string, unknown> = {
     debug: normalized.debug,
-    yoloMode: normalized.yoloMode,
     desktopNotifications: normalized.desktopNotifications,
     forwardedPromptTimeoutSeconds: normalized.forwardedPromptTimeoutSeconds,
   };

@@ -223,7 +223,7 @@ The extension creates this file automatically when it is missing. It controls ex
 |-----|---------|-------------|
 | `enabled` | `true` | Master switch. When `false`, the extension skips all registrations and startup work (permission hooks, commands, runtime API, forwarding). |
 | `debug` | `false` | Enables verbose diagnostics and permission review entries in `logs/pi-permission-system-debug.jsonl` |
-| `yoloMode` | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled |
+| `yoloMode` | `false` | Startup default for yolo mode in new sessions. Runtime toggles (settings modal or runtime API) are session-scoped: they are never written back to this file and never propagate to other running sessions |
 | `desktopNotifications` | `true` | Sends a native desktop notification when a permission prompt is waiting and this terminal tab is not focused |
 
 Debug output writes only under the extension directory by default. Set `PI_PERMISSION_SYSTEM_LOGS_DIR` to redirect the debug file to a specific directory. No debug output is printed to the terminal.
@@ -279,7 +279,7 @@ Other extensions can toggle yolo mode immediately through the shared runtime API
 ```ts
 type PermissionSystemGlobal = typeof globalThis & {
   __piPermissionSystem?: {
-    toggleYoloMode(options?: { persist?: boolean; source?: string }): { error?: string };
+    toggleYoloMode(options?: { source?: string }): { error?: string };
   };
 };
 
@@ -295,7 +295,7 @@ pi.registerShortcut("f8", {
 });
 ```
 
-The runtime API exposes `getYoloMode()`, `setYoloMode(enabled, options?)`, and `toggleYoloMode(options?)`. Runtime updates persist to `config.json` by default; pass `{ persist: false }` for a current-session-only toggle.
+The runtime API exposes `getYoloMode()`, `setYoloMode(enabled, options?)`, and `toggleYoloMode(options?)`. Yolo mode is session-scoped: runtime updates apply to the current session's in-memory config only, are never written to `config.json`, and therefore never propagate to other sessions. Each new session starts from the `yoloMode` value in `config.json`, so edit the file by hand if you want yolo mode on by default.
 
 ### Global Policy File
 
