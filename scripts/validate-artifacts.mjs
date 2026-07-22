@@ -35,12 +35,48 @@ function validateDefaultPolicy(value) {
   }
 }
 
+function validateBashRuleList(name, value) {
+  if (value === undefined) {
+    return;
+  }
+  assert(Array.isArray(value), `${name} must be an array of prefix rule strings`);
+  for (const entry of value) {
+    assert(typeof entry === "string" && entry.trim().length > 0, `${name} entries must be non-empty strings`);
+  }
+}
+
+function validateBashSection(value) {
+  assert(value && typeof value === "object" && !Array.isArray(value), "bash must be an object");
+  for (const listName of ["allow", "ask", "deny"]) {
+    validateBashRuleList(`bash.${listName}`, value[listName]);
+  }
+  if (value.syntax !== undefined) {
+    assert(value.syntax && typeof value.syntax === "object" && !Array.isArray(value.syntax), "bash.syntax must be an object");
+    for (const [key, state] of Object.entries(value.syntax)) {
+      assert(["subshells", "unanalyzable"].includes(key), `bash.syntax.${key} is not a recognized key`);
+      assert(permissionStates.has(state), `bash.syntax.${key} must be one of allow, deny, ask`);
+    }
+  }
+  if (value.registryOverrides !== undefined) {
+    assert(
+      value.registryOverrides && typeof value.registryOverrides === "object" && !Array.isArray(value.registryOverrides),
+      "bash.registryOverrides must be an object",
+    );
+  }
+}
+
 function validatePolicyExample(config) {
   validateDefaultPolicy(config.defaultPolicy);
-  for (const section of ["tools", "bash", "mcp", "skills", "special"]) {
+  for (const section of ["tools", "mcp", "skills", "special"]) {
     if (config[section] !== undefined) {
       validatePermissionStateMap(section, config[section]);
     }
+  }
+  if (config.bash !== undefined) {
+    validateBashSection(config.bash);
+  }
+  if (config.protectedPaths !== undefined) {
+    validateBashRuleList("protectedPaths", config.protectedPaths);
   }
 }
 

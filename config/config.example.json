@@ -9,17 +9,20 @@
   "tools": {
     "read": "allow",
     "read:/home/alice/project/generated/*": "allow",
-    "write": "deny"
+    "write": "ask",
+    "write:/home/alice/project/generated/*": "allow"
   },
   "bash": {
-    "git status": "allow",
-    "git *": "ask"
+    "allow": ["cargo check", "cargo test", "bun test", "gh run view"],
+    "ask": ["git diff"],
+    "deny": ["git push --force"],
+    "syntax": {
+      "subshells": "deny",
+      "unanalyzable": "ask"
+    },
+    "registryOverrides": {}
   },
-  "bashSafety": {
-    "complexSyntax": "ask",
-    "redirections": "ask",
-    "riskyOptions": "ask"
-  },
+  "protectedPaths": ["*.secret"],
   "mcp": {
     "mcp_status": "allow"
   },

@@ -82,7 +82,7 @@ type RuntimeHarnessOptions = {
 };
 
 function createRuntimeHarness(
-  config: GlobalPermissionConfig,
+  config: Record<string, unknown>,
   toolNames: readonly string[],
   options: RuntimeHarnessOptions = {},
 ): RuntimeHarness {
@@ -191,7 +191,7 @@ const tests: IssueTest[] = [
     scenario: "An ordinary one-shot approval must not silently persist for a later identical request.",
     fn: async () => {
       const harness = createRuntimeHarness(
-        { defaultPolicy: ASK_BASH_POLICY },
+        { defaultPolicy: ASK_BASH_POLICY, bash: { ask: ["git status", "git log", "echo"] } },
         ["bash"],
       );
 
@@ -228,7 +228,7 @@ const tests: IssueTest[] = [
     scenario: "A plain reject should deny only the current request; the same request can be prompted and approved later.",
     fn: async () => {
       const harness = createRuntimeHarness(
-        { defaultPolicy: ASK_BASH_POLICY },
+        { defaultPolicy: ASK_BASH_POLICY, bash: { ask: ["git status", "git log", "echo"] } },
         ["bash"],
       );
 
@@ -269,7 +269,7 @@ const tests: IssueTest[] = [
     scenario: "Reject with Reason returns feedback for the current request but must not save a future matching denial.",
     fn: async () => {
       const harness = createRuntimeHarness(
-        { defaultPolicy: ASK_BASH_POLICY },
+        { defaultPolicy: ASK_BASH_POLICY, bash: { ask: ["git status", "git log", "echo"] } },
         ["bash"],
       );
 
@@ -310,7 +310,7 @@ const tests: IssueTest[] = [
     scenario: "An explicit Allow Always should approve a later identical command in the same session without prompting.",
     fn: async () => {
       const harness = createRuntimeHarness(
-        { defaultPolicy: ASK_BASH_POLICY },
+        { defaultPolicy: ASK_BASH_POLICY, bash: { ask: ["git status", "git log", "echo"] } },
         ["bash"],
       );
 
@@ -346,7 +346,7 @@ const tests: IssueTest[] = [
     scenario: "A saved Allow Always for one command must not become an implicit wildcard for unrelated bash commands.",
     fn: async () => {
       const harness = createRuntimeHarness(
-        { defaultPolicy: ASK_BASH_POLICY },
+        { defaultPolicy: ASK_BASH_POLICY, bash: { ask: ["git status", "git log", "echo"] } },
         ["bash"],
       );
 
@@ -383,7 +383,7 @@ const tests: IssueTest[] = [
     scenario: "After an explicit Allow Always exists, a later configured deny for the same subject must remain a hard boundary.",
     fn: async () => {
       const harness = createRuntimeHarness(
-        { defaultPolicy: ASK_BASH_POLICY },
+        { defaultPolicy: ASK_BASH_POLICY, bash: { ask: ["git status", "git log", "echo"] } },
         ["bash"],
       );
       const projectPolicyPath = join(harness.cwd, ".pi", "agent", "pi-permissions.jsonc");
@@ -404,7 +404,7 @@ const tests: IssueTest[] = [
         mkdirSync(join(harness.cwd, ".pi", "agent"), { recursive: true });
         writeFileSync(
           projectPolicyPath,
-          `${JSON.stringify({ bash: { "git status --short": "deny" } }, null, 2)}\n`,
+          `${JSON.stringify({ bash: { deny: ["git status --short"] } }, null, 2)}\n`,
           "utf8",
         );
         await runLifecycle(harness, "resources_discover", { reason: "reload" });
@@ -417,7 +417,7 @@ const tests: IssueTest[] = [
 
         assert.equal(denied.block, true);
         assert.match(String(denied.reason), /not permitted to run 'bash' command 'git status --short'/);
-        assert.match(String(denied.reason), /matched 'git status --short'/);
+        assert.match(String(denied.reason), /deny rule 'git status --short'/);
       } finally {
         await harness.cleanup();
       }
@@ -429,7 +429,7 @@ const tests: IssueTest[] = [
     scenario: "Explicit auto-response should approve while enabled but must not mutate the Allow Always/session approval store.",
     fn: async () => {
       const harness = createRuntimeHarness(
-        { defaultPolicy: ASK_BASH_POLICY },
+        { defaultPolicy: ASK_BASH_POLICY, bash: { ask: ["git status", "git log", "echo"] } },
         ["bash"],
         { extensionConfig: { ...DEFAULT_EXTENSION_CONFIG, yoloMode: true } },
       );
@@ -475,7 +475,7 @@ const tests: IssueTest[] = [
     scenario: "Permission review logs must expose enough resolution detail to audit repeated-decision states separately.",
     fn: async () => {
       const harness = createRuntimeHarness(
-        { defaultPolicy: ASK_BASH_POLICY },
+        { defaultPolicy: ASK_BASH_POLICY, bash: { ask: ["git status", "git log", "echo"] } },
         ["bash"],
         { extensionConfig: { ...DEFAULT_EXTENSION_CONFIG, debug: true } },
       );
@@ -526,7 +526,7 @@ const tests: IssueTest[] = [
         mkdirSync(join(harness.cwd, ".pi", "agent"), { recursive: true });
         writeFileSync(
           join(harness.cwd, ".pi", "agent", "pi-permissions.jsonc"),
-          `${JSON.stringify({ bash: { "echo deny": "deny" } }, null, 2)}\n`,
+          `${JSON.stringify({ bash: { deny: ["echo deny"] } }, null, 2)}\n`,
           "utf8",
         );
         runtimeApi.setYoloMode(false);

@@ -12,17 +12,23 @@ import {
   toRecord,
 } from "./common.js";
 import {
-  clampPermissionStateWithSafety,
-  createBashSafetyAssessment,
-  normalizeBashSafetyPolicy,
-} from "./bash-safety.js";
+  DEFAULT_BASH_SYNTAX_POLICY,
+  evaluateBashCommand,
+  parseBashRulePrefix,
+  type BashEvaluationContext,
+  type BashRuleSets,
+  type BashSyntaxPolicy,
+} from "./bash-evaluator.js";
 import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.js";
-import { containsShellOperator, splitShellSubcommands } from "./shell-split.js";
+import {
+  compileRegistry,
+  createProtectedPathMatcher,
+  type CompiledRegistry,
+  type ProtectedPathMatcher,
+} from "./safe-commands.js";
 import type {
   AgentPermissions,
-  BashPermissions,
-  BashSafetyCategory,
-  BashSafetyPolicy,
+  BashPermissionSection,
   GlobalPermissionConfig,
   PermissionCheckResult,
   PermissionDefaultPolicy,
@@ -58,15 +64,22 @@ const DEFAULT_POLICY: PermissionDefaultPolicy = {
   special: "ask",
 };
 
+function createEmptyBashSection(): BashPermissionSection {
+  return { allow: [], ask: [], deny: [], syntax: {}, registryOverrides: {} };
+}
+
 const EMPTY_GLOBAL_CONFIG: GlobalPermissionConfig = {
   defaultPolicy: DEFAULT_POLICY,
   tools: {},
-  bash: {},
-  bashSafety: {},
+  bash: createEmptyBashSection(),
+  protectedPaths: [],
   mcp: {},
   skills: {},
   special: {},
 };
+
+/** Temp locations where redirection writes are allowed by default. */
+const DEFAULT_WRITABLE_PREFIXES = ["/tmp/", "/private/tmp/", "/var/folders/"];
 
 function normalizePolicy(value: unknown): PermissionDefaultPolicy {
   const record = toRecord(value);
@@ -144,15 +157,120 @@ function getConfiguredMcpServerNamesFromPaths(paths: readonly string[]): string[
   return [...seen].sort((left, right) => right.length - left.length || left.localeCompare(right));
 }
 
-function normalizeRawPermission(raw: unknown): AgentPermissions {
+/**
+ * Rule lists accept arrays of prefix strings and, for the minimal YAML agent
+ * frontmatter that cannot express arrays, a single comma-separated string
+ * ("cargo test, bun test").
+ */
+function normalizeBashRuleList(value: unknown): string[][] {
+  const entries = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  const rules: string[][] = [];
+  for (const entry of entries) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+    const prefix = parseBashRulePrefix(entry);
+    if (prefix.length > 0) {
+      rules.push(prefix);
+    }
+  }
+  return rules;
+}
+
+function suggestBashRuleFromLegacyPattern(pattern: string): string | null {
+  // "rg *" and "git diff *" style patterns translate directly to prefixes;
+  // anything with mid-pattern wildcards or operators has no equivalent.
+  const withoutTrailingWildcard = pattern.replace(/\s+\*$/, "").trim();
+  if (!withoutTrailingWildcard || /[*?|;&<>$`]/.test(withoutTrailingWildcard)) {
+    return null;
+  }
+  return withoutTrailingWildcard;
+}
+
+/**
+ * Parse the `bash` config section: `{ allow, ask, deny, syntax,
+ * registryOverrides }` with prefix-rule string lists. The pre-redesign
+ * glob-map format (`"rg *": "allow"`) is detected and reported once with
+ * suggested replacements, and is otherwise ignored.
+ */
+function normalizeBashSection(value: unknown, onWarning?: (message: string) => void): BashPermissionSection {
+  const section = createEmptyBashSection();
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return section;
+  }
+
+  const record = value as Record<string, unknown>;
+  const legacyEntries = Object.entries(record).filter(([, state]) => isPermissionState(state));
+  if (legacyEntries.length > 0) {
+    const suggestions: Record<string, string[]> = { allow: [], ask: [], deny: [] };
+    for (const [pattern, state] of legacyEntries) {
+      const suggested = suggestBashRuleFromLegacyPattern(pattern);
+      if (suggested && isPermissionState(state)) {
+        suggestions[state]?.push(`"${suggested}"`);
+      }
+    }
+    const suggestionText = (["allow", "ask", "deny"] as const)
+      .filter((state) => suggestions[state].length > 0)
+      .map((state) => `"${state}": [${suggestions[state].join(", ")}]`)
+      .join(", ");
+    onWarning?.(
+      `The bash permission config format changed: glob patterns like "rg *" are now prefix rule lists, `
+      + `and read-only commands are allowed by default via the built-in safe-command registry. `
+      + `Ignoring ${legacyEntries.length} legacy entr${legacyEntries.length === 1 ? "y" : "ies"}.`
+      + (suggestionText ? ` Suggested replacement: "bash": { ${suggestionText} } (registry-covered commands can be omitted).` : ""),
+    );
+  }
+
+  section.allow = normalizeBashRuleList(record.allow);
+  section.ask = normalizeBashRuleList(record.ask);
+  section.deny = normalizeBashRuleList(record.deny);
+
+  const syntax = toRecord(record.syntax);
+  if (isPermissionState(syntax.subshells)) {
+    section.syntax.subshells = syntax.subshells;
+  }
+  if (isPermissionState(syntax.unanalyzable)) {
+    section.syntax.unanalyzable = syntax.unanalyzable;
+  }
+
+  if (record.registryOverrides && typeof record.registryOverrides === "object" && !Array.isArray(record.registryOverrides)) {
+    section.registryOverrides = record.registryOverrides as Record<string, unknown>;
+  }
+
+  return section;
+}
+
+function normalizeProtectedPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function normalizeRawPermission(raw: unknown, onWarning?: (message: string) => void): AgentPermissions {
   const record = toRecord(raw);
   const normalizedTools = normalizePermissionRecord(record.tools);
+
+  if (record.bashSafety && typeof record.bashSafety === "object") {
+    onWarning?.(
+      "The bashSafety config section was removed: syntax, substitutions, redirections, and risky "
+      + "options are now evaluated per command piece. Use \"bash\": { \"syntax\": ... } and "
+      + "registryOverrides instead; see the README.",
+    );
+  }
 
   const normalized: AgentPermissions = {
     defaultPolicy: normalizePartialPolicy(record.defaultPolicy),
     tools: normalizedTools,
-    bash: normalizePermissionRecord(record.bash),
-    bashSafety: normalizeBashSafetyPolicy(record.bashSafety),
+    bash: normalizeBashSection(record.bash, onWarning),
+    protectedPaths: normalizeProtectedPaths(record.protectedPaths),
     mcp: normalizePermissionRecord(record.mcp),
     skills: normalizePermissionRecord(record.skills),
     special: normalizePermissionRecord(record.special),
@@ -329,9 +447,16 @@ type LayeredPermissionMatch = {
   matchedName: string;
 };
 
-type PermissionRecordCategory = "tools" | "bash" | "mcp" | "skills" | "special";
+type PermissionRecordCategory = "tools" | "mcp" | "skills" | "special";
 type PermissionDefaultCategory = keyof PermissionDefaultPolicy;
 type CompiledPermissionPatterns = readonly CompiledWildcardPattern<LayeredPermissionState>[];
+
+type ResolvedBashPolicy = {
+  rules: BashRuleSets;
+  registry: CompiledRegistry;
+  protectedPaths: ProtectedPathMatcher;
+  syntax: BashSyntaxPolicy;
+};
 
 type ResolvedPermissions = {
   globalConfig: GlobalPermissionConfig;
@@ -342,7 +467,7 @@ type ResolvedPermissions = {
   compiledSpecial: CompiledPermissionPatterns;
   compiledSkills: CompiledPermissionPatterns;
   compiledMcp: CompiledPermissionPatterns;
-  compiledBash: CompiledPermissionPatterns;
+  bashPolicy: ResolvedBashPolicy;
 };
 
 function createPermissionLayers(
@@ -521,71 +646,6 @@ function findCompiledPermissionMatchByPatternOrderForNames(
   return null;
 }
 
-function resolveBaseBashPermission(
-  command: string,
-  compiledBash: CompiledPermissionPatterns,
-  toolMatch: LayeredPermissionMatch | null,
-  layers: readonly PermissionLayer[],
-): { state: PermissionState; matchedPattern?: string } {
-  const fallbackState = (): PermissionState =>
-    toolMatch?.state
-      ?? resolveLayeredDefaultPermission(layers, "bash")?.state
-      ?? DEFAULT_POLICY.bash;
-
-  // Split on shell operators (|, &&, ||, ;) respecting quoting/subshells.
-  const subcommands = splitShellSubcommands(command);
-
-  if (subcommands.length <= 1) {
-    // Single command (no operators) — match the full string as before.
-    const result = findCompiledPermissionMatch(compiledBash, command);
-    return result
-      ? { state: result.state, matchedPattern: result.matchedPattern }
-      : { state: fallbackState() };
-  }
-
-  // Compound command. First, try matching the full command against patterns
-  // that explicitly contain shell operators (intentional compound patterns).
-  const fullMatch = findCompiledPermissionMatch(compiledBash, command);
-  if (fullMatch && containsShellOperator(fullMatch.matchedPattern)) {
-    return { state: fullMatch.state, matchedPattern: fullMatch.matchedPattern };
-  }
-
-  // Check each subcommand individually. If ALL match a pattern, return the
-  // most restrictive state. Otherwise fall through to tool-level / default.
-  const subResults = subcommands.map((sub) => findCompiledPermissionMatch(compiledBash, sub));
-  const allMatched = subResults.every((r) => r !== null);
-
-  if (allMatched) {
-    const mostRestrictive = subResults.reduce((worst, r) => {
-      if (!worst || !r) return worst;
-      return permissionStateIsMoreRestrictive(r.state, worst.state) ? r : worst;
-    });
-
-    return { state: mostRestrictive!.state, matchedPattern: mostRestrictive!.matchedPattern };
-  }
-
-  return { state: fallbackState() };
-}
-
-function resolveLayeredBashSafetyRequirement(
-  layers: readonly PermissionLayer[],
-  categories: readonly BashSafetyCategory[],
-): PermissionState {
-  let requirement: PermissionState = "allow";
-
-  for (const category of categories) {
-    const resolved = resolveLayeredPermissionValue(
-      layers,
-      (layer) => layer.permissions.bashSafety?.[category],
-    );
-    if (resolved && permissionStateIsMoreRestrictive(resolved.state, requirement)) {
-      requirement = resolved.state;
-    }
-  }
-
-  return requirement;
-}
-
 function getPathResourceFromInput(input: unknown): string | null {
   const record = toRecord(input);
   const pathValue = getNonEmptyString(record.path) ?? getNonEmptyString(record.file_path);
@@ -733,13 +793,13 @@ export class PermissionManager {
     try {
       const raw = readFileSync(this.globalConfigPath, "utf-8");
       const parsed = parseJsoncConfig(raw, this.globalConfigPath, "permission config");
-      const normalized = normalizeRawPermission(parsed);
+      const normalized = normalizeRawPermission(parsed, (message) => this.notifyWarning(message));
 
       value = {
         defaultPolicy: normalizePolicy(normalized.defaultPolicy),
         tools: normalized.tools || {},
-        bash: normalized.bash || {},
-        bashSafety: normalized.bashSafety || {},
+        bash: normalized.bash || createEmptyBashSection(),
+        protectedPaths: normalized.protectedPaths || [],
         mcp: normalized.mcp || {},
         skills: normalized.skills || {},
         special: normalized.special || {},
@@ -775,7 +835,7 @@ export class PermissionManager {
     try {
       const raw = readFileSync(this.projectGlobalConfigPath, "utf-8");
       const parsed = parseJsoncConfig(raw, this.projectGlobalConfigPath, "permission config");
-      value = normalizeRawPermission(parsed);
+      value = normalizeRawPermission(parsed, (message) => this.notifyWarning(message));
     } catch (error) {
       const warning = formatJsoncConfigLoadWarning(
         this.projectGlobalConfigPath,
@@ -817,7 +877,7 @@ export class PermissionManager {
         value = {};
       } else {
         const parsed = parseSimpleYamlMap(frontmatter);
-        value = normalizeRawPermission(parsed.permission);
+        value = normalizeRawPermission(parsed.permission, (message) => this.notifyWarning(message));
       }
     } catch {
       value = {};
@@ -846,13 +906,19 @@ export class PermissionManager {
         ...(agentConfig.tools || {}),
       },
       bash: {
-        ...(globalConfig.bash || {}),
-        ...(agentConfig.bash || {}),
+        allow: [...(globalConfig.bash?.allow || []), ...(agentConfig.bash?.allow || [])],
+        ask: [...(globalConfig.bash?.ask || []), ...(agentConfig.bash?.ask || [])],
+        deny: [...(globalConfig.bash?.deny || []), ...(agentConfig.bash?.deny || [])],
+        syntax: {
+          ...(globalConfig.bash?.syntax || {}),
+          ...(agentConfig.bash?.syntax || {}),
+        },
+        registryOverrides: {
+          ...(globalConfig.bash?.registryOverrides || {}),
+          ...(agentConfig.bash?.registryOverrides || {}),
+        },
       },
-      bashSafety: {
-        ...(globalConfig.bashSafety || {}),
-        ...(agentConfig.bashSafety || {}),
-      },
+      protectedPaths: [...(globalConfig.protectedPaths || []), ...(agentConfig.protectedPaths || [])],
       mcp: {
         ...(globalConfig.mcp || {}),
         ...(agentConfig.mcp || {}),
@@ -896,6 +962,11 @@ export class PermissionManager {
     const merged = this.mergePermissions(mergedWithAgent, projectAgentConfig);
     const layers = createPermissionLayers(globalConfig, projectConfig, agentConfig, projectAgentConfig);
 
+    const registry = compileRegistry(merged.bash?.registryOverrides || {});
+    for (const warning of registry.warnings) {
+      this.notifyWarning(warning);
+    }
+
     const value: ResolvedPermissions = {
       globalConfig,
       agentConfig,
@@ -905,21 +976,28 @@ export class PermissionManager {
       compiledSpecial: compilePermissionPatternsFromLayers("special", layers),
       compiledSkills: compilePermissionPatternsFromLayers("skills", layers),
       compiledMcp: compilePermissionPatternsFromLayers("mcp", layers),
-      compiledBash: compilePermissionPatternsFromLayers("bash", layers),
+      bashPolicy: {
+        rules: {
+          allow: merged.bash?.allow || [],
+          ask: merged.bash?.ask || [],
+          deny: merged.bash?.deny || [],
+        },
+        registry,
+        protectedPaths: createProtectedPathMatcher(merged.protectedPaths || []),
+        syntax: {
+          subshells: merged.bash?.syntax.subshells ?? DEFAULT_BASH_SYNTAX_POLICY.subshells,
+          unanalyzable: merged.bash?.syntax.unanalyzable ?? DEFAULT_BASH_SYNTAX_POLICY.unanalyzable,
+        },
+      },
     };
 
     this.resolvedPermissionsCache.set(cacheKey, { stamp, value });
     return value;
   }
 
-  getBashPermissions(agentName?: string): BashPermissions {
+  getBashPermissions(agentName?: string): BashPermissionSection {
     const { merged } = this.resolvePermissions(agentName);
-    return merged.bash || {};
-  }
-
-  getBashSafetyPolicy(agentName?: string): BashSafetyPolicy {
-    const { merged } = this.resolvePermissions(agentName);
-    return merged.bashSafety || {};
+    return merged.bash || createEmptyBashSection();
   }
 
   /**
@@ -1000,8 +1078,96 @@ export class PermissionManager {
       ?? DEFAULT_POLICY.tools;
   }
 
+  /**
+   * Evaluate a bash command piece by piece (see bash-evaluator.ts).
+   * `sessionAllowPrefixes` are session-approved allow prefixes; callers with
+   * a session approval store use checkBashCommand to include them.
+   */
+  private evaluateBash(
+    command: string,
+    cwd: string,
+    toolName: string,
+    agentName: string | undefined,
+    sessionAllowPrefixes: readonly string[][],
+  ): PermissionCheckResult {
+    const { layers, compiledTools, bashPolicy } = this.resolvePermissions(agentName);
+    const toolMatch = findCompiledPermissionMatch(compiledTools, "bash");
+    const defaultState = toolMatch?.state
+      ?? resolveLayeredDefaultPermission(layers, "bash")?.state
+      ?? DEFAULT_POLICY.bash;
+
+    const context: BashEvaluationContext = {
+      rules: bashPolicy.rules,
+      sessionAllowPrefixes,
+      registry: bashPolicy.registry,
+      protectedPaths: bashPolicy.protectedPaths,
+      syntax: bashPolicy.syntax,
+      defaultState,
+      resolveWriteState: (target) => this.resolveBashWriteState(target, cwd, compiledTools, layers),
+    };
+
+    const evaluation = evaluateBashCommand(command, context);
+    return {
+      toolName,
+      state: evaluation.state,
+      command,
+      source: "bash",
+      bashEvaluation: evaluation,
+    };
+  }
+
+  /**
+   * Permission for a file written via bash redirection. Precedence:
+   * explicit `write:<path>` tool rules, then the default temp-dir allowance,
+   * then the bare `write` tool state, then ask.
+   */
+  private resolveBashWriteState(
+    target: string,
+    cwd: string,
+    compiledTools: CompiledPermissionPatterns,
+    layers: readonly PermissionLayer[],
+  ): PermissionState {
+    const resource = normalizePathResourceForPermission(target, cwd) || target;
+
+    const pathRule = findCompiledPermissionMatchByPatternOrderForNames(compiledTools, [`write:${resource}`]);
+    if (pathRule) {
+      return pathRule.state;
+    }
+
+    const tmpDir = process.env.TMPDIR?.trim();
+    const writablePrefixes = tmpDir
+      ? [...DEFAULT_WRITABLE_PREFIXES, tmpDir.endsWith("/") ? tmpDir : `${tmpDir}/`]
+      : DEFAULT_WRITABLE_PREFIXES;
+    if (writablePrefixes.some((prefix) => resource.startsWith(prefix))) {
+      return "allow";
+    }
+
+    const writeToolRule = findCompiledPermissionMatch(compiledTools, "write");
+    return writeToolRule?.state
+      ?? resolveLayeredDefaultPermission(layers, "tools")?.state
+      ?? "ask";
+  }
+
+  /**
+   * Public bash entry point for callers holding session approvals (the
+   * extension's permission flow): re-evaluates with session allow prefixes
+   * included so approved families silence matching pieces of compounds too.
+   */
+  checkBashCommand(
+    command: string,
+    options: { agentName?: string; cwd?: string; sessionAllowPrefixes?: readonly string[][] } = {},
+  ): PermissionCheckResult {
+    return this.evaluateBash(
+      command,
+      options.cwd ?? process.cwd(),
+      "bash",
+      options.agentName,
+      options.sessionAllowPrefixes ?? [],
+    );
+  }
+
   checkPermission(toolName: string, input: unknown, agentName?: string): PermissionCheckResult {
-    const { merged, layers, compiledTools, compiledSpecial, compiledSkills, compiledMcp, compiledBash } = this.resolvePermissions(agentName);
+    const { merged, layers, compiledTools, compiledSpecial, compiledSkills, compiledMcp } = this.resolvePermissions(agentName);
     const normalizedToolName = toolName.trim();
     const toolMatch = findCompiledPermissionMatch(compiledTools, normalizedToolName);
 
@@ -1039,24 +1205,8 @@ export class PermissionManager {
     if (normalizedToolName === "bash") {
       const record = toRecord(input);
       const command = typeof record.command === "string" ? record.command : "";
-      const base = resolveBaseBashPermission(command, compiledBash, toolMatch, layers);
-
-      // Bash safety gate: combine the ordinary policy result with the
-      // configured requirement for any triggered safety categories using
-      // restrictive precedence (deny > ask > allow). Omitted `bashSafety`
-      // resolves every category to "allow", preserving pre-gate behavior.
-      const safety = createBashSafetyAssessment(command, (categories) =>
-        resolveLayeredBashSafetyRequirement(layers, categories),
-      );
-
-      return {
-        toolName,
-        state: clampPermissionStateWithSafety(base.state, safety.state),
-        command,
-        matchedPattern: base.matchedPattern,
-        source: "bash",
-        safety,
-      };
+      const cwd = getNonEmptyString(record.cwd) ?? process.cwd();
+      return this.evaluateBash(command, cwd, toolName, agentName, []);
     }
 
     if (normalizedToolName === "mcp") {

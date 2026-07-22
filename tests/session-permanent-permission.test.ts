@@ -59,7 +59,6 @@ import { runTest, runAsyncTest } from "./test-harness.js";
 // Existing modules — these imports MUST succeed against current code
 // ---------------------------------------------------------------------------
 import { PermissionManager } from "../src/permission-manager.js";
-import { BashFilter } from "../src/bash-filter.js";
 import {
   compileWildcardPattern,
   findCompiledWildcardMatch,
@@ -68,13 +67,13 @@ import {
   isPermissionDecisionState,
   requestPermissionDecisionFromUi,
 } from "../src/permission-dialog.js";
-import type { PermissionState, GlobalPermissionConfig } from "../src/types.js";
+import type { PermissionState } from "../src/types.js";
 
 // ===========================================================================
 // Helpers
 // =========================================================================--
 
-function createManager(config: GlobalPermissionConfig) {
+function createManager(config: Record<string, unknown>) {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-issue23-"));
   const globalConfigPath = join(baseDir, "pi-permissions.jsonc");
   const agentsDir = join(baseDir, "agents");
@@ -186,18 +185,29 @@ await runAsyncTest("ISSUE23-A6: store.clear removes all session approvals", asyn
   assert.equal(store.hasSessionApproval("bash", "git status"), false, "After clear, no approvals should remain");
 });
 
-// A7: once approval is consumed (one-shot semantics) — existing test for does-not-exist pattern
-await runAsyncTest("ISSUE23-A7: once approval with wildcard pattern matches multiple commands", async () => {
+// A7 (redesigned): bash session approvals are exact commands plus family
+// prefixes — never wildcards. Family prefixes feed the per-piece bash
+// evaluator via getBashAllowPrefixes; exact approvals only cover their
+// precise command text.
+await runAsyncTest("ISSUE23-A7: bash approvals are exact + family prefixes, not wildcards", async () => {
   const mod = await tryImportSessionApprovalStore();
   if (mod === null) { assert.fail("TDD: Module ../src/session-approval-store.js does not exist yet."); return; }
 
-  const store = new (mod.SessionApprovalStore as new () => { approveOnce: (tool: string, pattern: string) => void; hasSessionApproval: (tool: string, command: string) => boolean })();
-  // Approve with a wildcard pattern
-  store.approveOnce("bash", "git *");
-  // Multiple commands starting with "git " should match
-  assert.equal(store.hasSessionApproval("bash", "git status"), true, "Wildcard git * should match git status");
-  assert.equal(store.hasSessionApproval("bash", "git log"), true, "Wildcard git * should match git log");
-  assert.equal(store.hasSessionApproval("bash", "git commit -m test"), true, "Wildcard git * should match git commit");
+  type Store = {
+    approveOnce: (tool: string, pattern: string) => void;
+    hasSessionApproval: (tool: string, command: string) => boolean;
+    approveBashFamilyPrefixes: (families: readonly (readonly string[])[]) => string[];
+    getBashAllowPrefixes: () => readonly string[][];
+  };
+  const store = new (mod.SessionApprovalStore as new () => Store)();
+
+  store.approveOnce("bash", "git status");
+  assert.equal(store.hasSessionApproval("bash", "git status"), true, "Exact approval covers the exact command");
+  assert.equal(store.hasSessionApproval("bash", "git status --short"), false, "Exact approval must not broaden");
+
+  const stored = store.approveBashFamilyPrefixes([["git", "log"]]);
+  assert.deepEqual(stored, ["git log"]);
+  assert.deepEqual(store.getBashAllowPrefixes(), [["git", "log"]], "Family prefixes are exposed to the evaluator");
 });
 
 // A8: Session approval does not persist across reload
