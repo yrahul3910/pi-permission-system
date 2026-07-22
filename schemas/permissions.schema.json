@@ -37,6 +37,11 @@
     "bash": {
       "$ref": "#/$defs/permissionMap"
     },
+    "bashSafety": {
+      "description": "Optional Bash safety gate. Omitted fields allow for backwards compatibility.",
+      "type": "object", "additionalProperties": false,
+      "properties": { "complexSyntax": { "$ref": "#/$defs/permissionState" }, "redirections": { "$ref": "#/$defs/permissionState" }, "riskyOptions": { "$ref": "#/$defs/permissionState" } }
+    },
     "mcp": {
       "description": "Pattern-based permissions for targets invoked through a registered `mcp` tool when available.",
       "$ref": "#/$defs/permissionMap"

@@ -36,6 +36,7 @@ import {
   type PermissionSystemExtensionConfig,
 } from "./extension-config.js";
 import { createPermissionSystemLogger, safeJsonStringify } from "./logging.js";
+import { analyzeBashSafety } from "./bash-safety.js";
 import {
   sendDesktopNotification,
   startTerminalFocusTracker,
@@ -148,6 +149,8 @@ type PermissionPromptDetails = PermissionRequestCommonFields & {
   approvalPersistence?: string;
   decisionScope?: string;
   approvalScope?: string;
+  safeBashFamily?: string;
+  bashSafety?: PermissionCheckResult["bashSafety"];
 };
 
 type CachedPermissionPromptDecision = {
@@ -590,12 +593,14 @@ function getPermissionLogContext(
   commandMetadata: SensitiveLogMetadata | null;
   target?: string;
   toolInput: unknown;
+  bashSafety?: PermissionCheckResult["bashSafety"];
 } {
   return {
     command: result.toolName === "bash" && result.command ? result.command : undefined,
     commandMetadata: createSensitiveLogMetadata(result.command),
     target: result.target,
     toolInput: input,
+    bashSafety: result.bashSafety,
   };
 }
 
@@ -649,9 +654,13 @@ function applyPatternApprovalState(
     sessionApprovals.getRules(),
   );
 
+  const state = result.bashSafety
+    ? (result.bashSafety.findings.some((finding) => result.bashSafety!.policy[finding] === "deny") ? "deny"
+      : result.bashSafety.findings.some((finding) => result.bashSafety!.policy[finding] === "ask") ? "ask" : evaluated.action)
+    : evaluated.action;
   return {
     ...result,
-    state: evaluated.action,
+    state,
     matchedPattern: evaluated.matchedPattern ?? result.matchedPattern,
   };
 }
@@ -676,8 +685,17 @@ function persistSessionApprovalDecision(
   input: unknown,
   sessionApprovals: SessionApprovalStore,
 ): { subject: string; persistence: "session" } | null {
-  if (!decision.approved || decision.state !== "always") {
+  if (!decision.approved || (decision.state !== "always" && decision.state !== "safe_family")) {
     return null;
+  }
+
+  if (decision.state === "safe_family") {
+    const command = typeof toRecord(input).command === "string" ? toRecord(input).command : "";
+    const analysis = analyzeBashSafety(command);
+    if (result.toolName !== "bash" || !analysis.family || analysis.findings.length > 0) return null;
+    const subject = `${analysis.family} *`;
+    sessionApprovals.approveAlways("bash", subject);
+    return { subject, persistence: "session" };
   }
 
   const subject = getPatternApprovalSubject(result, input);
@@ -1344,9 +1362,10 @@ export async function processForwardedPermissionRequests(
 async function confirmPermission(
   ctx: ExtensionContext,
   message: string,
+  safeBashFamily?: string,
 ): Promise<PermissionPromptDecision> {
   if (ctx.hasUI) {
-    return requestPermissionDecisionFromUi(ctx.ui, "Permission Required", message);
+    return requestPermissionDecisionFromUi(ctx.ui, "Permission Required", message, { safeBashFamily });
   }
 
   if (!isSubagentExecutionContext(ctx)) {
@@ -1694,6 +1713,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       approvalPersistence: details.approvalPersistence ?? null,
       decisionScope: details.decisionScope ?? null,
       approvalScope: details.approvalScope ?? null,
+      bashSafety: details.bashSafety ?? null,
     });
   };
 
@@ -1744,15 +1764,15 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         notifyPermissionWaitingIfUnfocused(details.message);
       }
 
-      const decision = await turnRuntime.pauseWhile(() => confirmPermission(ctx, details.message));
+      const decision = await turnRuntime.pauseWhile(() => confirmPermission(ctx, details.message, details.safeBashFamily));
       reviewPermissionDecision(decision.approved ? "permission_request.approved" : "permission_request.denied", {
         ...details,
         resolution: decision.state,
         denialReason: decision.denialReason,
-        decisionPersistence: decision.state === "always" ? "session" : "none",
-        approvalPersistence: decision.approved && decision.state === "always" ? "session" : "none",
+        decisionPersistence: (decision.state === "always" || decision.state === "safe_family") ? "session" : "none",
+        approvalPersistence: decision.approved && (decision.state === "always" || decision.state === "safe_family") ? "session" : "none",
         decisionScope: getPermissionDecisionScope(details),
-        approvalScope: decision.approved && decision.state === "always"
+        approvalScope: decision.approved && (decision.state === "always" || decision.state === "safe_family")
           ? getPermissionDecisionScope(details)
           : undefined,
       });
@@ -2446,6 +2466,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         toolCallId: event.toolCallId,
         toolName,
         ...permissionLogContext,
+        safeBashFamily: check.bashSafety?.family,
       });
       if (!decision.approved) {
         return { block: true, reason: formatUserDeniedReason(check, decision.denialReason) };

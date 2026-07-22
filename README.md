@@ -169,7 +169,7 @@ All permissions use one of three states:
 | `deny`  | Blocks the action with an error message     |
 | `ask`   | Prompts the user for confirmation via UI    |
 
-When an `ask` permission prompts, the confirmation UI offers `Allow Once`, `Allow Always`, `Reject`, and `Reject with Reason`. `Allow Once` approves only the current request. `Allow Always` records an explicit matching approval for the current session only (in-memory, not persisted to disk), while plain `Reject` and `Reject with Reason` deny only the current request and do not silently become future defaults. YOLO/auto-response approvals also do not create saved approval rules; after YOLO mode is disabled, matching `ask` requests require approval again. A configured `deny` remains a hard boundary and is not relaxed by prior one-shot, auto-response, or saved approvals.
+When an `ask` permission prompts, the confirmation UI offers `Allow Once`, `Allow Always`, `Reject`, and `Reject with Reason`. Safe, simple Bash commands additionally offer `Allow safe <family> commands this session`, which stores a session-only `<family> *` rule. `Allow Once` approves only the current request. `Allow Always` records an explicit matching approval for the current session only (in-memory, not persisted to disk), while plain `Reject` and `Reject with Reason` deny only the current request and do not silently become future defaults. YOLO/auto-response approvals also do not create saved approval rules; after YOLO mode is disabled, matching `ask` requests require approval again. A configured `deny` remains a hard boundary and is not relaxed by prior one-shot, auto-response, or saved approvals.
 
 ### Pi Integration Hooks
 
@@ -438,6 +438,16 @@ Command patterns use `*` wildcards and match against the full command string. If
   }
 }
 ```
+
+### `bashSafety`
+
+Broad Bash wildcard rules can be retained while safety-sensitive forms are clamped independently. Configure `complexSyntax`, `redirections`, and `riskyOptions` as `allow`, `ask`, or `deny`; the most restrictive result wins. Omitting `bashSafety` preserves legacy behavior: all three categories effectively allow.
+
+```jsonc
+{ "bashSafety": { "complexSyntax": "ask", "redirections": "ask", "riskyOptions": "ask" } }
+```
+
+The safety scanner recognizes substitutions, pipes/compound operators and real command newlines, redirections, and execution-capable options including `rg --pre`, `fd --exec`/`-x`, `sed -i` or `.../e`, and `git --ext-diff`. Quoted and escaped metacharacters are literals; malformed syntax fails closed as `complexSyntax`.
 
 ### `mcp`
 

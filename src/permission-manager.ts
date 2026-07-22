@@ -13,6 +13,7 @@ import {
 } from "./common.js";
 import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.js";
 import { containsShellOperator, splitShellSubcommands } from "./shell-split.js";
+import { analyzeBashSafety, LEGACY_BASH_SAFETY, mostRestrictive, type BashSafetyPolicy } from "./bash-safety.js";
 import type {
   AgentPermissions,
   BashPermissions,
@@ -58,6 +59,7 @@ const EMPTY_GLOBAL_CONFIG: GlobalPermissionConfig = {
   mcp: {},
   skills: {},
   special: {},
+  bashSafety: {},
 };
 
 function normalizePolicy(value: unknown): PermissionDefaultPolicy {
@@ -147,6 +149,7 @@ function normalizeRawPermission(raw: unknown): AgentPermissions {
     mcp: normalizePermissionRecord(record.mcp),
     skills: normalizePermissionRecord(record.skills),
     special: normalizePermissionRecord(record.special),
+    bashSafety: normalizeBashSafety(record.bashSafety),
   };
 
   for (const [key, value] of Object.entries(record)) {
@@ -165,6 +168,12 @@ function normalizeRawPermission(raw: unknown): AgentPermissions {
   }
 
   return normalized;
+}
+
+function normalizeBashSafety(value: unknown): AgentPermissions["bashSafety"] {
+  const record = toRecord(value); const result: NonNullable<AgentPermissions["bashSafety"]> = {};
+  for (const key of ["complexSyntax", "redirections", "riskyOptions"] as const) if (isPermissionState(record[key])) result[key] = record[key];
+  return result;
 }
 
 function parseQualifiedMcpToolName(value: string): { server: string; tool: string } | null {
@@ -786,6 +795,7 @@ export class PermissionManager {
         ...(globalConfig.special || {}),
         ...(agentConfig.special || {}),
       },
+      bashSafety: { ...(globalConfig.bashSafety || {}), ...(agentConfig.bashSafety || {}) },
     };
   }
 
@@ -959,10 +969,13 @@ export class PermissionManager {
       // Split on shell operators (|, &&, ||, ;) respecting quoting/subshells.
       const subcommands = splitShellSubcommands(command);
 
+      const safety = analyzeBashSafety(command);
+      const safetyPolicy: BashSafetyPolicy = { ...LEGACY_BASH_SAFETY, ...(merged.bashSafety || {}) };
+      const clamp = (result: PermissionCheckResult): PermissionCheckResult => ({ ...result, state: mostRestrictive([result.state, ...safety.findings.map((finding) => safetyPolicy[finding])]), bashSafety: { ...safety, policy: safetyPolicy } });
       if (subcommands.length <= 1) {
         // Single command (no operators) — match the full string as before.
         const result = findCompiledPermissionMatch(compiledBash, command);
-        return {
+        return clamp({
           toolName,
           state: result?.state
             ?? toolMatch?.state
@@ -971,20 +984,20 @@ export class PermissionManager {
           command,
           matchedPattern: result?.matchedPattern,
           source: "bash",
-        };
+        });
       }
 
       // Compound command. First, try matching the full command against patterns
       // that explicitly contain shell operators (intentional compound patterns).
       const fullMatch = findCompiledPermissionMatch(compiledBash, command);
       if (fullMatch && containsShellOperator(fullMatch.matchedPattern)) {
-        return {
+        return clamp({
           toolName,
           state: fullMatch.state,
           command,
           matchedPattern: fullMatch.matchedPattern,
           source: "bash",
-        };
+        });
       }
 
       // Check each subcommand individually. If ALL match a pattern, return the
@@ -998,16 +1011,16 @@ export class PermissionManager {
           return permissionStateIsMoreRestrictive(r.state, worst.state) ? r : worst;
         });
 
-        return {
+        return clamp({
           toolName,
           state: mostRestrictive!.state,
           command,
           matchedPattern: mostRestrictive!.matchedPattern,
           source: "bash",
-        };
+        });
       }
 
-      return {
+      return clamp({
         toolName,
         state: toolMatch?.state
           ?? resolveLayeredDefaultPermission(layers, "bash")?.state
@@ -1015,7 +1028,7 @@ export class PermissionManager {
         command,
         matchedPattern: undefined,
         source: "bash",
-      };
+      });
     }
 
     if (normalizedToolName === "mcp") {

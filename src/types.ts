@@ -5,6 +5,7 @@ export type BuiltInToolName = "bash" | "read" | "write" | "edit" | "grep" | "fin
 export type ToolPermissions = Record<string, PermissionState>;
 
 export type BashPermissions = Record<string, PermissionState>;
+export interface BashSafetyPermissions { complexSyntax?: PermissionState; redirections?: PermissionState; riskyOptions?: PermissionState; }
 
 export type SkillPermissions = Record<string, PermissionState>;
 
@@ -24,6 +25,7 @@ export interface AgentPermissions {
   defaultPolicy?: Partial<PermissionDefaultPolicy>;
   tools?: ToolPermissions;
   bash?: BashPermissions;
+  bashSafety?: BashSafetyPermissions;
   mcp?: ToolPermissions;
   skills?: SkillPermissions;
   special?: SpecialPermissions;
@@ -40,4 +42,5 @@ export interface PermissionCheckResult {
   command?: string;
   target?: string;
   source: "tool" | "bash" | "mcp" | "skill" | "special" | "default";
+  bashSafety?: { findings: ("complexSyntax" | "redirections" | "riskyOptions")[]; family?: string; policy: Record<"complexSyntax" | "redirections" | "riskyOptions", PermissionState> };
 }

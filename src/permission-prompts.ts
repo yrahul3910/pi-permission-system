@@ -271,7 +271,8 @@ export function formatAskPrompt(result: PermissionCheckResult, agentName?: strin
 
   if (result.toolName === "bash") {
     const patternInfo = result.matchedPattern ? ` (matched '${result.matchedPattern}')` : "";
-    return `${subject} requested bash command '${result.command || ""}'${patternInfo}. Allow this command?`;
+    const safetyInfo = result.bashSafety?.findings.length ? ` Safety gate: ${result.bashSafety.findings.join(", ")}.` : "";
+    return `${subject} requested bash command '${result.command || ""}'${patternInfo}.${safetyInfo} Allow this command?`;
   }
 
   if ((result.source === "mcp" || result.toolName === "mcp") && result.target) {

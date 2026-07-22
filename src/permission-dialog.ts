@@ -1,6 +1,6 @@
 import { getNonEmptyString } from "./common.js";
 
-export type PermissionDecisionState = "approved" | "denied" | "denied_with_reason" | "once" | "always" | "reject";
+export type PermissionDecisionState = "approved" | "denied" | "denied_with_reason" | "once" | "always" | "safe_family" | "reject";
 
 export type PermissionPromptDecision = {
   approved: boolean;
@@ -20,6 +20,7 @@ export interface PermissionDecisionUi {
 export type PermissionDecisionRequestOptions = {
   timeoutMs?: number;
   timeoutDenialReason?: string;
+  safeBashFamily?: string;
 };
 
 const APPROVE_ONCE_OPTION = "Allow Once";
@@ -105,6 +106,7 @@ export function isPermissionDecisionState(
     || value === "denied_with_reason"
     || value === "once"
     || value === "always"
+    || value === "safe_family"
     || value === "reject";
 }
 
@@ -117,9 +119,10 @@ export async function requestPermissionDecisionFromUi(
   const selectOptions = typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
     ? { timeout: options.timeoutMs }
     : undefined;
+  const familyOption = options.safeBashFamily ? `Allow safe ${options.safeBashFamily} commands this session` : undefined;
   const selected = await ui.select(
     compactPermissionPromptForSelect(`${title}\n${message}`),
-    [...PERMISSION_DECISION_OPTIONS],
+    familyOption ? [APPROVE_ONCE_OPTION, APPROVE_ALWAYS_OPTION, familyOption, REJECT_OPTION, REJECT_WITH_REASON_OPTION] : [...PERMISSION_DECISION_OPTIONS],
     selectOptions,
   );
 
@@ -136,6 +139,7 @@ export async function requestPermissionDecisionFromUi(
       state: "always",
     };
   }
+  if (selected === familyOption) return { approved: true, state: "safe_family" };
 
   if (selected === REJECT_WITH_REASON_OPTION) {
     const denialReason = normalizePermissionDenialReason(
