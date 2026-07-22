@@ -2,10 +2,14 @@
 // entire config file, destroying user-defined permission fields (defaultPolicy,
 // tools, bash, mcp, skills, special) that coexist in the same config.json.
 //
-// Root cause: savePermissionSystemConfig writes ONLY the three extension fields
+// Root cause: savePermissionSystemConfig writes ONLY the extension fields
 // (debug, yoloMode, forwardedPromptTimeoutSeconds) back to disk, discarding all
-// other keys. loadPermissionSystemConfig similarly only reads those three fields,
+// other keys. loadPermissionSystemConfig similarly only reads those fields,
 // so even a round-trip load→save cycle erases everything else.
+//
+// Note: yoloMode has since become session-scoped — saves no longer write it to
+// disk at all (see EXTENSION_CONFIG_KEYS), so these tests assert it is left
+// untouched rather than updated.
 //
 // Desired behavior: saving the extension config MUST preserve all existing
 // non-extension fields (including unknown/future keys) that are present in the
@@ -322,7 +326,8 @@ const tests: IssueTest[] = [
     name: "savePermissionSystemConfig preserves permission fields when toggling yoloMode",
     kind: "red",
     scenario:
-      "Toggling yoloMode to true via save must NOT destroy the permission fields.",
+      "Saving with yoloMode set to true must NOT destroy the permission fields. Yolo mode is "
+      + "session-scoped, so the save must also leave the file's yoloMode value untouched.",
     fn: () => {
       const { configPath, cleanup } = createIsolatedConfigDir(
         `${JSON.stringify(ISSUE_CONFIG_WITH_PERMISSIONS, null, 2)}\n`,
@@ -338,7 +343,11 @@ const tests: IssueTest[] = [
         assert.equal(saved.success, true);
 
         const raw = readRawConfig(configPath);
-        assert.equal(raw.yoloMode, true);
+        assert.equal(
+          raw.yoloMode,
+          false,
+          "yoloMode is session-scoped: saves must not change the file's yoloMode value",
+        );
 
         for (const key of PERMISSION_KEYS) {
           assert.ok(
@@ -570,7 +579,7 @@ const tests: IssueTest[] = [
         const raw = readRawConfig(configPath);
         assert.deepEqual(raw.defaultPolicy, ISSUE_CONFIG_WITH_PERMISSIONS.defaultPolicy);
         assert.deepEqual(raw.tools, ISSUE_CONFIG_WITH_PERMISSIONS.tools);
-        assert.equal(raw.yoloMode, true);
+        assert.equal(raw.yoloMode, false, "yoloMode is session-scoped and left untouched by saves");
       } finally {
         cleanup();
       }
@@ -652,10 +661,15 @@ const tests: IssueTest[] = [
 
         const raw = readRawConfig(configPath);
 
-        // Extension fields should now be present.
+        // Synced extension fields should now be present. yoloMode is
+        // session-scoped, so saves must not add it.
         assert.equal(raw.debug, true);
-        assert.equal(raw.yoloMode, false);
         assert.equal(raw.forwardedPromptTimeoutSeconds, 30);
+        assert.equal(
+          Object.prototype.hasOwnProperty.call(raw, "yoloMode"),
+          false,
+          "yoloMode is session-scoped and must not be added by saves",
+        );
 
         // Permission fields must be preserved.
         for (const key of PERMISSION_KEYS) {
@@ -852,11 +866,12 @@ const tests: IssueTest[] = [
   // =========================================================================
 
   {
-    name: "runtime: toggling yoloMode via runtime API preserves permission fields in config file",
+    name: "runtime: toggling yoloMode via runtime API is session-scoped and preserves the config file",
     kind: "red",
     scenario:
-      "When yoloMode is toggled via the runtime API (setYoloMode), the underlying save must preserve "
-      + "all permission fields in the config file.",
+      "When yoloMode is toggled via the runtime API (setYoloMode), the toggle applies to the session's "
+      + "in-memory config only. The shared config file must keep its original yoloMode value and all "
+      + "permission fields, so the toggle cannot propagate to other sessions.",
     fn: async () => {
       const harness = createRuntimeHarness(
         `${JSON.stringify(ISSUE_CONFIG_WITH_PERMISSIONS, null, 2)}\n`,
@@ -865,17 +880,27 @@ const tests: IssueTest[] = [
       try {
         // Access the runtime API registered by the extension.
         const runtimeApi = (globalThis as Record<string, unknown>).__piPermissionSystem as
-          | { setYoloMode: (enabled: boolean, options?: { persist?: boolean }) => { changed: boolean; persisted: boolean; error?: string } }
+          | {
+              getYoloMode: () => boolean;
+              setYoloMode: (enabled: boolean) => { changed: boolean; persisted: boolean; error?: string };
+            }
           | undefined;
 
         assert.ok(runtimeApi, "runtime API should be registered");
-        const result = runtimeApi.setYoloMode(true, { persist: true });
+        const result = runtimeApi.setYoloMode(true);
         assert.equal(result.changed, true);
-        assert.equal(result.persisted, true);
+        // Yolo mode is session-scoped: toggles are never written to the shared
+        // config file.
+        assert.equal(result.persisted, false);
         assert.equal(result.error, undefined);
+        assert.equal(runtimeApi.getYoloMode(), true);
 
         const raw = readRawConfig(harness.extensionConfigPath);
-        assert.equal(raw.yoloMode, true);
+        assert.equal(
+          raw.yoloMode,
+          false,
+          "yoloMode runtime toggles must not be written to the shared config file",
+        );
 
         for (const key of PERMISSION_KEYS) {
           assert.ok(
@@ -911,7 +936,11 @@ const tests: IssueTest[] = [
 
         const raw = readRawConfig(configPath);
         assert.equal(raw.debug, true);
-        assert.equal(raw.yoloMode, false);
+        assert.equal(
+          Object.prototype.hasOwnProperty.call(raw, "yoloMode"),
+          false,
+          "yoloMode is session-scoped and must not be added by saves",
+        );
         assert.equal(raw.forwardedPromptTimeoutSeconds, 30);
       } finally {
         cleanup();
@@ -1637,7 +1666,11 @@ const tests: IssueTest[] = [
 
         const raw = readRawConfig(configPath);
         assert.equal(raw.debug, false, "debug should be updated to false");
-        assert.equal(raw.yoloMode, false, "yoloMode should be present as default");
+        assert.equal(
+          Object.prototype.hasOwnProperty.call(raw, "yoloMode"),
+          false,
+          "yoloMode is session-scoped and must not be added by saves",
+        );
         assert.equal(raw.forwardedPromptTimeoutSeconds, 30, "timeout should be present as default");
 
         for (const key of PERMISSION_KEYS) {
@@ -1699,8 +1732,9 @@ const tests: IssueTest[] = [
     name: "savePermissionSystemConfig preserves permissions when yoloMode is a number (1)",
     kind: "red",
     scenario:
-      "If yoloMode is set to 1 (number), normalize coerces it to false (via === true). Saving writes yoloMode:false. "
-      + "All permission fields must still be preserved.",
+      "If yoloMode is set to 1 (number), normalize coerces it to false (via === true). Because yolo mode is "
+      + "session-scoped, saving leaves the file's yoloMode value untouched. All permission fields must still "
+      + "be preserved.",
     fn: () => {
       const configWithNumericYolo = {
         ...ISSUE_CONFIG_WITH_PERMISSIONS,
@@ -1720,6 +1754,7 @@ const tests: IssueTest[] = [
         assert.equal(saved.success, true);
 
         const raw = readRawConfig(configPath);
+        assert.equal(raw.yoloMode, 1, "yoloMode is session-scoped: saves leave the file's yoloMode untouched");
         for (const key of PERMISSION_KEYS) {
           assert.ok(
             Object.prototype.hasOwnProperty.call(raw, key),
@@ -1858,7 +1893,7 @@ const tests: IssueTest[] = [
 
         const raw = readRawConfig(configPath);
         assert.equal(raw.debug, false, "debug should be off after rapid toggles");
-        assert.equal(raw.yoloMode, true, "yoloMode should be on after rapid toggles");
+        assert.equal(raw.yoloMode, false, "yoloMode is session-scoped: saves never change the file's yoloMode");
 
         for (const key of PERMISSION_KEYS) {
           assert.ok(

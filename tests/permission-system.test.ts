@@ -102,8 +102,8 @@ type MockHandler = (
 
 type PermissionSystemRuntimeApi = {
   getYoloMode(): boolean;
-  setYoloMode(enabled: boolean, options?: { persist?: boolean; source?: string }): { yoloMode: boolean; changed: boolean; persisted: boolean; error?: string };
-  toggleYoloMode(options?: { persist?: boolean; source?: string }): { yoloMode: boolean; changed: boolean; persisted: boolean; error?: string };
+  setYoloMode(enabled: boolean, options?: { source?: string }): { yoloMode: boolean; changed: boolean; persisted: boolean; error?: string };
+  toggleYoloMode(options?: { source?: string }): { yoloMode: boolean; changed: boolean; persisted: boolean; error?: string };
 };
 
 type GlobalWithPermissionSystem = typeof globalThis & {
@@ -416,15 +416,25 @@ await runAsyncTest("Extension exposes a runtime YOLO API for other extensions", 
 
     await Promise.resolve(harness.handlers.session_start?.({ reason: "startup" }, createMockContext(harness.cwd, harness.prompts, { hasUI: true, statusUpdates })));
 
-    const transient = api.toggleYoloMode({ persist: false, source: "test-extension" });
+    const transient = api.toggleYoloMode({ source: "test-extension" });
     assert.deepEqual(transient, { yoloMode: true, changed: true, persisted: false });
     assert.equal(loadPermissionSystemConfig().config.yoloMode, false);
     const enabledStatus = statusUpdates.at(-1);
     assert.equal(enabledStatus?.key, "pi-permission-system");
     assert.equal(enabledStatus?.value, "yolo");
 
-    const persisted = api.setYoloMode(false, { source: "test-extension" });
-    assert.deepEqual(persisted, { yoloMode: false, changed: true, persisted: true });
+    // Yolo mode is session-scoped: a config refresh (fired on every
+    // before_agent_start) must not reset this session's in-memory toggle from
+    // the shared config file, and the file must remain untouched.
+    await Promise.resolve(harness.handlers.before_agent_start?.(
+      { systemPrompt: "" },
+      createMockContext(harness.cwd, harness.prompts, { hasUI: true, statusUpdates }),
+    ));
+    assert.equal(api.getYoloMode(), true);
+    assert.equal(loadPermissionSystemConfig().config.yoloMode, false);
+
+    const disabled = api.setYoloMode(false, { source: "test-extension" });
+    assert.deepEqual(disabled, { yoloMode: false, changed: true, persisted: false });
     assert.equal(loadPermissionSystemConfig().config.yoloMode, false);
     const disabledStatus = statusUpdates.at(-1);
     assert.equal(disabledStatus?.key, "pi-permission-system");
@@ -609,7 +619,7 @@ runTest("Permission-system extension config normalizes invalid persisted values 
   }
 });
 
-runTest("Permission-system extension config save persists normalized config", () => {
+runTest("Permission-system extension config save persists normalized synced config but not yoloMode", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-save-"));
   const configPath = join(baseDir, "config.json");
 
@@ -628,10 +638,12 @@ runTest("Permission-system extension config save persists normalized config", ()
 
     const result = loadPermissionSystemConfig(configPath);
     assert.equal(result.warning, undefined);
+    // yoloMode is session-scoped: saves never write it, so a reload returns
+    // the default while the synced fields persist.
     assert.deepEqual(result.config, {
       enabled: true,
       debug: true,
-      yoloMode: true,
+      yoloMode: false,
       desktopNotifications: true,
       forwardedPromptTimeoutSeconds: 30,
     });

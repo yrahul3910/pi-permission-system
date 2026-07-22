@@ -1480,10 +1480,26 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const sessionApprovals = new SessionApprovalStore();
   const recentPermissionPromptDecisions = new Map<string, CachedPermissionPromptDecision>();
 
-  const loadExtensionConfigState = (): PermissionSystemConfigLoadResult => {
+  // Initial activation load: adopts the file's yoloMode as this session's
+  // starting value, so a manually configured default is respected at startup.
+  const loadInitialExtensionConfigState = (): PermissionSystemConfigLoadResult => {
     const result = loadPermissionSystemConfig();
     setExtensionConfig(result.config);
     return result;
+  };
+
+  // Lifecycle refreshes (session_start, resources_discover, before_agent_start)
+  // re-sync every setting from disk except yolo mode, which is session-scoped:
+  // a value written by another session must neither enable yolo here nor reset
+  // this session's in-memory toggle.
+  const refreshExtensionConfigState = (): PermissionSystemConfigLoadResult => {
+    const result = loadPermissionSystemConfig();
+    const config: PermissionSystemExtensionConfig = {
+      ...result.config,
+      yoloMode: extensionConfig.yoloMode,
+    };
+    setExtensionConfig(config);
+    return { ...result, config };
   };
 
   const applyExtensionConfigSideEffects = (
@@ -1514,7 +1530,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
 
   const refreshExtensionConfig = (ctx?: ExtensionContext): void => {
-    const result = loadExtensionConfigState();
+    const result = refreshExtensionConfigState();
     applyExtensionConfigSideEffects(result, ctx);
   };
 
@@ -1563,33 +1579,17 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     const normalized = normalizePermissionSystemConfig({ ...extensionConfig, yoloMode: enabled });
-    const persisted = options.persist !== false;
     const changed = extensionConfig.yoloMode !== normalized.yoloMode;
 
-    if (persisted) {
-      const saved = savePermissionSystemConfig(normalized);
-      if (!saved.success) {
-        const error = saved.error ?? "Failed to persist pi-permission-system config.";
-        writeDebugEntry("yolo_mode.update_failed", {
-          error,
-          requestedYoloMode: normalized.yoloMode,
-          source: getNonEmptyString(options.source) ?? "runtime-api",
-        });
-        return {
-          yoloMode: extensionConfig.yoloMode,
-          changed: false,
-          persisted: false,
-          error,
-        };
-      }
-      lastConfigWarning = null;
-    }
-
+    // Yolo mode is session-scoped: toggles apply to this session's in-memory
+    // config only and are never written to the shared config file, so they
+    // cannot propagate to other sessions. `persisted` is therefore always
+    // false and the `persist` option is accepted but ignored.
     setExtensionConfig(normalized);
     syncPermissionSystemStatusWhenPossible(normalized);
     writeDebugEntry("yolo_mode.updated", {
       changed,
-      persisted,
+      persisted: false,
       source: getNonEmptyString(options.source) ?? "runtime-api",
       yoloMode: normalized.yoloMode,
     });
@@ -1597,13 +1597,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     return {
       yoloMode: normalized.yoloMode,
       changed,
-      persisted,
+      persisted: false,
     };
   };
 
   setLoggingWarningReporter(notifyWarning);
 
-  const initialConfigResult = loadExtensionConfigState();
+  const initialConfigResult = loadInitialExtensionConfigState();
 
   if (!extensionConfig.enabled) {
     return;

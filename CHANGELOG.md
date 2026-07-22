@@ -5,13 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0-patch.2] - 2026-07-22
 
 ### Added
 - Added an optional `bashSafety` policy section (`complexSyntax`, `redirections`, `riskyOptions`; each `allow`/`ask`/`deny`) backed by a conservative quote/escape-aware shell analyzer in `src/bash-safety.ts`. The gate applies after ordinary bash pattern matching and after session approvals with restrictive precedence (`deny` > `ask` > `allow`), so broad allow rules such as `rg *` no longer silently authorize command substitution, pipes/compound commands, redirections, or risky options like `rg --pre`, `fd --exec`/`-x`, `sed -i`/`s///e`, and `git --ext-diff`. Quoted/escaped metacharacters do not trigger, malformed syntax fails closed, and omitting `bashSafety` keeps existing behavior (all categories `allow`). Check results carry structured `safety` metadata, and prompts, deny reasons, and review-log entries include the triggered categories and reasons.
 - Added an `Allow safe <family> commands this session` option to bash approval prompts for a single safe simple command (for example, approving `rg foo src` records the session-only approval `{ tool: "bash", pattern: "rg *", action: "allow" }`). The option is never offered for unsafe, compound, malformed, redirected, substituted, or ambiguous commands or for wrapper executables such as `sudo`/`env`/`xargs`; the family is re-derived from the real command text before saving; and the resulting wildcard approval only ever matches other safe simple commands of that family. Forwarded permission decision validation accepts the new `always_family` state safely.
 - Added an active agent-run runtime to Pi's `Working...` spinner. The runtime persists through tool-call turns until the final response, updates once per second, and excludes time spent awaiting local or forwarded permission decisions.
 - Added a gray `Thought for <time>` annotation before the final assistant response on Pi versions with entry-renderer support.
+
+### Changed
+- Yolo mode is now session-scoped. Toggling it via the `/permission-system` settings modal or the `__piPermissionSystem` runtime API only affects the current session: it is never written to the shared `config.json`, and config reloads on `session_start`/`resources_discover`/`before_agent_start` preserve the session's in-memory toggle instead of re-reading it from disk, so enabling yolo mode in one session no longer propagates to other running sessions. The `yoloMode` key in `config.json` now only sets the startup default for new sessions, and all other settings (`debug`, `desktopNotifications`, `forwardedPromptTimeoutSeconds`) keep syncing through the config file as before.
+
+### Removed
+- Removed the `persist` option from the runtime yolo API (`setYoloMode`/`toggleYoloMode`): yolo mode is session-scoped and never persisted, so the option no longer exists. Results still report `persisted`, which is now always `false`.
 
 ## [0.8.0-patch.1] - 2026-07-10
 
