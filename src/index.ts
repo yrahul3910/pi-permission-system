@@ -21,7 +21,12 @@ import {
   shouldApplyCachedAgentStartState,
 } from "./before-agent-start-cache.js";
 import {
+  clampPermissionStateWithSafety,
+  deriveBashCommandFamily,
+} from "./bash-safety.js";
+import {
   isPermissionDecisionState,
+  isSessionPersistentDecisionState,
   requestPermissionDecisionFromUi,
   type PermissionPromptDecision,
 } from "./permission-dialog.js";
@@ -82,7 +87,7 @@ import {
 import { sanitizeAvailableToolsSection } from "./system-prompt-sanitizer.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "./tool-registry.js";
 import { formatTurnRuntime, TurnRuntimeTracker } from "./turn-runtime.js";
-import type { PermissionCheckResult } from "./types.js";
+import type { BashSafetyAssessment, PermissionCheckResult } from "./types.js";
 import { PERMISSION_SYSTEM_STATUS_KEY, syncPermissionSystemStatus } from "./status.js";
 import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "./yolo-mode.js";
 import {
@@ -142,6 +147,8 @@ type SensitiveLogMetadata = {
 type PermissionPromptDetails = PermissionRequestCommonFields & {
   agentName: string | null;
   commandMetadata?: SensitiveLogMetadata | null;
+  safety?: BashSafetyAssessment | null;
+  safeCommandFamily?: string;
   resolution?: string;
   denialReason?: string;
   decisionPersistence?: string;
@@ -588,12 +595,14 @@ function getPermissionLogContext(
 ): {
   command?: string;
   commandMetadata: SensitiveLogMetadata | null;
+  safety?: BashSafetyAssessment | null;
   target?: string;
   toolInput: unknown;
 } {
   return {
     command: result.toolName === "bash" && result.command ? result.command : undefined,
     commandMetadata: createSensitiveLogMetadata(result.command),
+    safety: result.toolName === "bash" ? result.safety ?? null : undefined,
     target: result.target,
     toolInput: input,
   };
@@ -646,12 +655,22 @@ function applyPatternApprovalState(
     result.toolName,
     subject,
     [createConfigEvaluationRule(result)],
-    sessionApprovals.getRules(),
+    sessionApprovals.getApplicableRules(result.toolName, subject),
   );
+
+  // Re-apply the bash safety gate after session approvals so a session
+  // wildcard approval cannot bypass it. An exact "Allow Always" approval of
+  // this precise command was confirmed by the user against a prompt that
+  // included the safety notice, so it satisfies the gate.
+  const satisfiedByExactApproval = evaluated.action === "allow"
+    && sessionApprovals.hasExactAllowApproval(result.toolName, subject);
+  const state = satisfiedByExactApproval
+    ? evaluated.action
+    : clampPermissionStateWithSafety(evaluated.action, result.safety?.state);
 
   return {
     ...result,
-    state: evaluated.action,
+    state,
     matchedPattern: evaluated.matchedPattern ?? result.matchedPattern,
   };
 }
@@ -676,7 +695,30 @@ function persistSessionApprovalDecision(
   input: unknown,
   sessionApprovals: SessionApprovalStore,
 ): { subject: string; persistence: "session" } | null {
-  if (!decision.approved || decision.state !== "always") {
+  if (!decision.approved) {
+    return null;
+  }
+
+  if (decision.state === "always_family") {
+    // Session-only safe-family approval. Recompute and validate the family
+    // from the real command text — never trust a UI label or a forwarded
+    // decision payload. Unsafe, compound, malformed, or ambiguous commands
+    // never yield a family, so nothing is persisted for them (the decision
+    // still approves this single call).
+    if (result.toolName !== "bash" || !result.command) {
+      return null;
+    }
+
+    const family = deriveBashCommandFamily(result.command);
+    if (!family) {
+      return null;
+    }
+
+    const pattern = sessionApprovals.approveSafeFamilyAlways(result.toolName, family);
+    return pattern ? { subject: pattern, persistence: "session" } : null;
+  }
+
+  if (decision.state !== "always") {
     return null;
   }
 
@@ -1344,9 +1386,12 @@ export async function processForwardedPermissionRequests(
 async function confirmPermission(
   ctx: ExtensionContext,
   message: string,
+  safeCommandFamily?: string,
 ): Promise<PermissionPromptDecision> {
   if (ctx.hasUI) {
-    return requestPermissionDecisionFromUi(ctx.ui, "Permission Required", message);
+    return requestPermissionDecisionFromUi(ctx.ui, "Permission Required", message, {
+      safeCommandFamily,
+    });
   }
 
   if (!isSubagentExecutionContext(ctx)) {
@@ -1685,6 +1730,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       promptMetadata: createSensitiveLogMetadata(details.message),
       ...pickPermissionPromptToolFields(details),
       commandMetadata: details.commandMetadata ?? null,
+      safety: details.safety ?? null,
       target: details.target ?? null,
       toolInput: details.toolInput ?? null,
       resolution: details.resolution ?? null,
@@ -1744,15 +1790,16 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         notifyPermissionWaitingIfUnfocused(details.message);
       }
 
-      const decision = await turnRuntime.pauseWhile(() => confirmPermission(ctx, details.message));
+      const decision = await turnRuntime.pauseWhile(() => confirmPermission(ctx, details.message, details.safeCommandFamily));
+      const persistsSessionApproval = isSessionPersistentDecisionState(decision.state);
       reviewPermissionDecision(decision.approved ? "permission_request.approved" : "permission_request.denied", {
         ...details,
         resolution: decision.state,
         denialReason: decision.denialReason,
-        decisionPersistence: decision.state === "always" ? "session" : "none",
-        approvalPersistence: decision.approved && decision.state === "always" ? "session" : "none",
+        decisionPersistence: persistsSessionApproval ? "session" : "none",
+        approvalPersistence: decision.approved && persistsSessionApproval ? "session" : "none",
         decisionScope: getPermissionDecisionScope(details),
-        approvalScope: decision.approved && decision.state === "always"
+        approvalScope: decision.approved && persistsSessionApproval
           ? getPermissionDecisionScope(details)
           : undefined,
       });
@@ -2423,6 +2470,15 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           ? "Using tool 'mcp' requires approval, but no interactive UI is available."
           : `Using tool '${toolName}' requires approval, but no interactive UI is available.`;
 
+      // Offer "Allow safe <family> commands this session" only for a single
+      // safe simple command with zero safety findings and a clear executable.
+      const safeCommandFamily = toolName === "bash"
+        && check.safety
+        && check.safety.findings.length === 0
+        && check.safety.family
+        ? check.safety.family
+        : undefined;
+
       const message = formatAskPrompt(check, agentName ?? undefined, input);
       if (!canRequestPermissionConfirmation(ctx)) {
         writeReviewEntry("permission_request.blocked", {
@@ -2445,6 +2501,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         message,
         toolCallId: event.toolCallId,
         toolName,
+        safeCommandFamily,
         ...permissionLogContext,
       });
       if (!decision.approved) {

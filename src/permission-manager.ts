@@ -11,11 +11,18 @@ import {
   parseSimpleYamlMap,
   toRecord,
 } from "./common.js";
+import {
+  clampPermissionStateWithSafety,
+  createBashSafetyAssessment,
+  normalizeBashSafetyPolicy,
+} from "./bash-safety.js";
 import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.js";
 import { containsShellOperator, splitShellSubcommands } from "./shell-split.js";
 import type {
   AgentPermissions,
   BashPermissions,
+  BashSafetyCategory,
+  BashSafetyPolicy,
   GlobalPermissionConfig,
   PermissionCheckResult,
   PermissionDefaultPolicy,
@@ -55,6 +62,7 @@ const EMPTY_GLOBAL_CONFIG: GlobalPermissionConfig = {
   defaultPolicy: DEFAULT_POLICY,
   tools: {},
   bash: {},
+  bashSafety: {},
   mcp: {},
   skills: {},
   special: {},
@@ -144,6 +152,7 @@ function normalizeRawPermission(raw: unknown): AgentPermissions {
     defaultPolicy: normalizePartialPolicy(record.defaultPolicy),
     tools: normalizedTools,
     bash: normalizePermissionRecord(record.bash),
+    bashSafety: normalizeBashSafetyPolicy(record.bashSafety),
     mcp: normalizePermissionRecord(record.mcp),
     skills: normalizePermissionRecord(record.skills),
     special: normalizePermissionRecord(record.special),
@@ -512,6 +521,71 @@ function findCompiledPermissionMatchByPatternOrderForNames(
   return null;
 }
 
+function resolveBaseBashPermission(
+  command: string,
+  compiledBash: CompiledPermissionPatterns,
+  toolMatch: LayeredPermissionMatch | null,
+  layers: readonly PermissionLayer[],
+): { state: PermissionState; matchedPattern?: string } {
+  const fallbackState = (): PermissionState =>
+    toolMatch?.state
+      ?? resolveLayeredDefaultPermission(layers, "bash")?.state
+      ?? DEFAULT_POLICY.bash;
+
+  // Split on shell operators (|, &&, ||, ;) respecting quoting/subshells.
+  const subcommands = splitShellSubcommands(command);
+
+  if (subcommands.length <= 1) {
+    // Single command (no operators) — match the full string as before.
+    const result = findCompiledPermissionMatch(compiledBash, command);
+    return result
+      ? { state: result.state, matchedPattern: result.matchedPattern }
+      : { state: fallbackState() };
+  }
+
+  // Compound command. First, try matching the full command against patterns
+  // that explicitly contain shell operators (intentional compound patterns).
+  const fullMatch = findCompiledPermissionMatch(compiledBash, command);
+  if (fullMatch && containsShellOperator(fullMatch.matchedPattern)) {
+    return { state: fullMatch.state, matchedPattern: fullMatch.matchedPattern };
+  }
+
+  // Check each subcommand individually. If ALL match a pattern, return the
+  // most restrictive state. Otherwise fall through to tool-level / default.
+  const subResults = subcommands.map((sub) => findCompiledPermissionMatch(compiledBash, sub));
+  const allMatched = subResults.every((r) => r !== null);
+
+  if (allMatched) {
+    const mostRestrictive = subResults.reduce((worst, r) => {
+      if (!worst || !r) return worst;
+      return permissionStateIsMoreRestrictive(r.state, worst.state) ? r : worst;
+    });
+
+    return { state: mostRestrictive!.state, matchedPattern: mostRestrictive!.matchedPattern };
+  }
+
+  return { state: fallbackState() };
+}
+
+function resolveLayeredBashSafetyRequirement(
+  layers: readonly PermissionLayer[],
+  categories: readonly BashSafetyCategory[],
+): PermissionState {
+  let requirement: PermissionState = "allow";
+
+  for (const category of categories) {
+    const resolved = resolveLayeredPermissionValue(
+      layers,
+      (layer) => layer.permissions.bashSafety?.[category],
+    );
+    if (resolved && permissionStateIsMoreRestrictive(resolved.state, requirement)) {
+      requirement = resolved.state;
+    }
+  }
+
+  return requirement;
+}
+
 function getPathResourceFromInput(input: unknown): string | null {
   const record = toRecord(input);
   const pathValue = getNonEmptyString(record.path) ?? getNonEmptyString(record.file_path);
@@ -665,6 +739,7 @@ export class PermissionManager {
         defaultPolicy: normalizePolicy(normalized.defaultPolicy),
         tools: normalized.tools || {},
         bash: normalized.bash || {},
+        bashSafety: normalized.bashSafety || {},
         mcp: normalized.mcp || {},
         skills: normalized.skills || {},
         special: normalized.special || {},
@@ -774,6 +849,10 @@ export class PermissionManager {
         ...(globalConfig.bash || {}),
         ...(agentConfig.bash || {}),
       },
+      bashSafety: {
+        ...(globalConfig.bashSafety || {}),
+        ...(agentConfig.bashSafety || {}),
+      },
       mcp: {
         ...(globalConfig.mcp || {}),
         ...(agentConfig.mcp || {}),
@@ -836,6 +915,11 @@ export class PermissionManager {
   getBashPermissions(agentName?: string): BashPermissions {
     const { merged } = this.resolvePermissions(agentName);
     return merged.bash || {};
+  }
+
+  getBashSafetyPolicy(agentName?: string): BashSafetyPolicy {
+    const { merged } = this.resolvePermissions(agentName);
+    return merged.bashSafety || {};
   }
 
   /**
@@ -955,66 +1039,23 @@ export class PermissionManager {
     if (normalizedToolName === "bash") {
       const record = toRecord(input);
       const command = typeof record.command === "string" ? record.command : "";
+      const base = resolveBaseBashPermission(command, compiledBash, toolMatch, layers);
 
-      // Split on shell operators (|, &&, ||, ;) respecting quoting/subshells.
-      const subcommands = splitShellSubcommands(command);
-
-      if (subcommands.length <= 1) {
-        // Single command (no operators) — match the full string as before.
-        const result = findCompiledPermissionMatch(compiledBash, command);
-        return {
-          toolName,
-          state: result?.state
-            ?? toolMatch?.state
-            ?? resolveLayeredDefaultPermission(layers, "bash")?.state
-            ?? DEFAULT_POLICY.bash,
-          command,
-          matchedPattern: result?.matchedPattern,
-          source: "bash",
-        };
-      }
-
-      // Compound command. First, try matching the full command against patterns
-      // that explicitly contain shell operators (intentional compound patterns).
-      const fullMatch = findCompiledPermissionMatch(compiledBash, command);
-      if (fullMatch && containsShellOperator(fullMatch.matchedPattern)) {
-        return {
-          toolName,
-          state: fullMatch.state,
-          command,
-          matchedPattern: fullMatch.matchedPattern,
-          source: "bash",
-        };
-      }
-
-      // Check each subcommand individually. If ALL match a pattern, return the
-      // most restrictive state. Otherwise fall through to tool-level / default.
-      const subResults = subcommands.map((sub) => findCompiledPermissionMatch(compiledBash, sub));
-      const allMatched = subResults.every((r) => r !== null);
-
-      if (allMatched) {
-        const mostRestrictive = subResults.reduce((worst, r) => {
-          if (!worst || !r) return worst;
-          return permissionStateIsMoreRestrictive(r.state, worst.state) ? r : worst;
-        });
-
-        return {
-          toolName,
-          state: mostRestrictive!.state,
-          command,
-          matchedPattern: mostRestrictive!.matchedPattern,
-          source: "bash",
-        };
-      }
+      // Bash safety gate: combine the ordinary policy result with the
+      // configured requirement for any triggered safety categories using
+      // restrictive precedence (deny > ask > allow). Omitted `bashSafety`
+      // resolves every category to "allow", preserving pre-gate behavior.
+      const safety = createBashSafetyAssessment(command, (categories) =>
+        resolveLayeredBashSafetyRequirement(layers, categories),
+      );
 
       return {
         toolName,
-        state: toolMatch?.state
-          ?? resolveLayeredDefaultPermission(layers, "bash")?.state
-          ?? DEFAULT_POLICY.bash,
+        state: clampPermissionStateWithSafety(base.state, safety.state),
         command,
-        matchedPattern: undefined,
+        matchedPattern: base.matchedPattern,
         source: "bash",
+        safety,
       };
     }
 

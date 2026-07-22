@@ -103,6 +103,8 @@ If you are coming from OpenCode, you usually do **not** need to rewrite your who
 - **System Prompt Sanitization** — Removes denied tool entries from the `Available tools:` system prompt section so the agent only sees tools it can actually call
 - **Runtime Enforcement** — Blocks/asks/allows at tool call time with UI confirmation dialogs and readable approval summaries
 - **Bash Command Control** — Wildcard pattern matching for granular bash command permissions
+- **Bash Safety Gate** — Optional `bashSafety` policy that keeps broad allow rules like `rg *` from silently authorizing command substitution, pipes/compound commands, redirections, or risky options such as `rg --pre` and `sed -i`
+- **Safe Family Session Approvals** — Approval prompts for a single safe simple command offer `Allow safe <family> commands this session`, recording a session-only `<family> *` approval that never covers safety-gated variants
 - **MCP Access Control** — Server and tool-level permissions for MCP operations
 - **Skill Protection** — Controls which skills can be loaded or read from disk, including multi-block prompt sanitization and path-inferred reads under Pi skill directories
 - **Per-Agent Overrides** — Agent-specific permission policies via YAML frontmatter
@@ -170,6 +172,8 @@ All permissions use one of three states:
 | `ask`   | Prompts the user for confirmation via UI    |
 
 When an `ask` permission prompts, the confirmation UI offers `Allow Once`, `Allow Always`, `Reject`, and `Reject with Reason`. `Allow Once` approves only the current request. `Allow Always` records an explicit matching approval for the current session only (in-memory, not persisted to disk), while plain `Reject` and `Reject with Reason` deny only the current request and do not silently become future defaults. YOLO/auto-response approvals also do not create saved approval rules; after YOLO mode is disabled, matching `ask` requests require approval again. A configured `deny` remains a hard boundary and is not relaxed by prior one-shot, auto-response, or saved approvals.
+
+For a bash prompt whose command is exactly one safe simple command — no substitutions, redirections, pipes/compound operators, risky options, or ambiguous syntax — the dialog additionally offers `Allow safe <family> commands this session` (for example, `Allow safe rg commands this session` when approving `rg foo src`). Choosing it records a session-only approval equivalent to `{ tool: "bash", pattern: "rg *", action: "allow" }` that applies **only to other safe simple commands of that family**: later `rg --pre ...`, `rg foo > out.txt`, `rg $(...)`, piped, compound, or multi-line `rg` commands still ask (or stay denied). The family is always re-derived from the real command text before it is saved, and the option is never offered for unsafe, compound, malformed, redirected, substituted, or ambiguous commands or for wrapper executables such as `sudo`, `env`, `xargs`, or shells.
 
 ### Pi Integration Hooks
 
@@ -304,6 +308,7 @@ The policy file is a JSON object with these sections:
 | `defaultPolicy` | Fallback permissions per category                   |
 | `tools`         | Pattern-based tool permissions for registered tools |
 | `bash`          | Command pattern permissions                         |
+| `bashSafety`    | Safety gate for shell syntax, redirections, and risky options in bash commands |
 | `mcp`           | MCP server/tool permissions for calls routed through a registered `mcp` tool |
 | `skills`        | Skill name pattern permissions                      |
 | `special`       | Reserved permission checks such as external directory access |
@@ -439,6 +444,45 @@ Command patterns use `*` wildcards and match against the full command string. If
 }
 ```
 
+### `bashSafety`
+
+Broad allow rules such as `"rg *": "allow"` or `"git diff *": "allow"` match the full command string, so without extra protection they would also match `rg --pre evil ...`, `rg foo > out.txt`, or `rg $(cmd)`. The `bashSafety` section adds a conservative, quote/escape-aware safety gate that classifies each bash command before it runs:
+
+| Category        | Triggers on |
+|-----------------|-------------|
+| `complexSyntax` | Command substitution (`$(...)`, backticks), process substitution (`<(...)`, `>(...)`), compound operators (`\|`, `\|\|`, `&&`, `;`, background `&`), subshell parentheses, real unquoted newlines that separate commands, and malformed/unbalanced quoting or any syntax the analyzer cannot confidently parse (fails closed) |
+| `redirections`  | `>`, `>>`, `<`, `<<`, `<<<`, `2>`, `>&`, `<&`, `&>`, `&>>`, and similar redirection operators |
+| `riskyOptions`  | `rg --pre` / `--pre=...`, `fd --exec` / `--exec-batch` / `-x` / `-X`, `sed -i` / `--in-place` and execution expressions such as `s/a/b/e`, `git --ext-diff` |
+
+Quoted or escaped metacharacters do not trigger the gate (`rg "foo|bar" src` and `echo 'a > b'` are safe), but command substitution inside double quotes still counts because the shell would execute it.
+
+```jsonc
+{
+  "bash": {
+    "rg *": "allow",
+    "git diff *": "allow"
+  },
+  "bashSafety": {
+    "complexSyntax": "ask",
+    "redirections": "ask",
+    "riskyOptions": "ask"
+  }
+}
+```
+
+Each category supports `allow`, `ask`, or `deny`. The gate is applied **after** ordinary bash pattern matching and **after** session approvals, and the results combine with restrictive precedence (`deny` > `ask` > `allow`):
+
+- A configured `deny` stays `deny`.
+- An ordinary `rg foo src` matched by `rg *` remains allowed.
+- `rg --pre evil foo src` becomes `ask` when `riskyOptions` is `"ask"` — even though `rg *` matches.
+- A session wildcard approval (including safe-family approvals) cannot bypass the gate. The one exception is an exact `Allow Always` approval of the identical command text: the user already confirmed that precise command against a prompt that included the safety notice, so it does not re-ask.
+
+Prompts and review-log entries include the triggered categories and reasons (for example ``Bash safety gate [redirections]: redirection '>'``), and check results carry structured `safety` metadata (`categories`, `findings`, resolved `state`, and the safe-command `family`).
+
+> **Backward compatibility:** `bashSafety` is entirely optional. When the section (or an individual category) is omitted, that category behaves as `allow` and existing configurations keep their current behavior — broad rules like `rg *` continue to match redirected, piped, and risky-option variants exactly as before. Add `bashSafety` only when you want the gate.
+
+Layering works like the other sections: project-local files can tighten `bashSafety` but cannot relax a `deny` set by a trusted layer.
+
 ### `mcp`
 
 MCP permissions match against derived targets from tool input. These rules are more specific than `tools.mcp` and override that fallback when a pattern matches:
@@ -563,6 +607,29 @@ Reserved permission checks:
 }
 ```
 
+### Broad Read-Only Bash Rules with the Safety Gate
+
+Keep the convenience of broad allow rules while requiring approval for shell execution, writes, and ambiguous syntax hiding inside them:
+
+```jsonc
+{
+  "defaultPolicy": { "tools": "ask", "bash": "ask", "mcp": "ask", "skills": "ask", "special": "ask" },
+  "bash": {
+    "rg *": "allow",
+    "fd *": "allow",
+    "git diff *": "allow",
+    "git log *": "allow"
+  },
+  "bashSafety": {
+    "complexSyntax": "ask",
+    "redirections": "ask",
+    "riskyOptions": "ask"
+  }
+}
+```
+
+With this policy `rg foo src` and `git diff HEAD~1` run silently, while `rg --pre evil foo`, `rg foo > out.txt`, `git diff $(cmd)`, and `fd -x rm` all prompt first.
+
 ### MCP Discovery Only
 
 ```jsonc
@@ -638,6 +705,7 @@ src/
 ├── index.ts                     → Extension bootstrap, permission checks, readable prompts, debug review entries, reload handling, and subagent forwarding
 ├── before-agent-start-cache.ts  → Caches prompt/tool filtering state between before_agent_start runs
 ├── bash-filter.ts               → Bash command wildcard pattern matching
+├── bash-safety.ts               → Conservative shell analyzer for the bash safety gate and safe-family derivation
 ├── common.ts                    → Shared utilities (YAML parsing, type guards, etc.)
 ├── config-modal.ts              → `/permission-system` modal registration and settings UI wiring
 ├── extension-config.ts          → Extension-local config loading and default creation
@@ -658,6 +726,7 @@ src/
 └── zellij-modal.ts              → Reusable modal/settings UI components
 tests/
 ├── permission-system.test.ts    → Core permission, layering, forwarding, and policy tests
+├── bash-safety.test.ts          → Bash safety gate and safe-family session approval tests
 ├── config-modal.test.ts         → Modal command behavior tests
 ├── turn-runtime.test.ts         → Active-agent runtime and permission-pause tests
 └── test-harness.ts              → Shared lightweight test helpers
@@ -677,6 +746,7 @@ The extension uses a modular architecture with shared utilities:
 | `wildcard-matcher.ts` | Compile-once wildcard patterns with specificity sorting: `compileWildcardPatterns()`, `findCompiledWildcardMatch()` |
 | `permission-manager.ts` | Policy resolution with file stamp caching for performance |
 | `bash-filter.ts` | Uses shared wildcard matcher for bash command patterns |
+| `bash-safety.ts` | Quote/escape-aware shell analysis: safety categories, restrictive clamping, safe-family derivation |
 | `skill-prompt-sanitizer.ts` | Parses all available skill prompt blocks, removes denied skills, and tracks visible skill paths for read protection |
 
 #### Performance Optimizations
