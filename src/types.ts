@@ -21,7 +21,11 @@ export interface BashPermissionSection {
   ask: string[][];
   deny: string[][];
   syntax: {
-    /** Subshells `(...)` and brace groups `{ ...; }`. Default "deny". */
+    /**
+     * Governs every construct the analyzer refuses by default: subshells
+     * `(...)`, brace groups `{ ...; }`, function declarations, and
+     * coprocesses. Default "deny".
+     */
     subshells?: PermissionState;
     /** Parse failures and constructs the analyzer cannot resolve. Default "ask". */
     unanalyzable?: PermissionState;

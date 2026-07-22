@@ -78,6 +78,11 @@ const denies = [
   "grep key vault.corpsecret", // config-added protected path
   "(cd /; ls)",
   "git push --force origin main",
+  // Literal fragments of expansion-carrying words are still protected:
+  'cat "$HOME/.env"',
+  "cat $HOME/.ssh/id_rsa",
+  'tr x y < "$HOME/.env"',
+  'cat "$DIR".e\'\'nv',
 ];
 
 runTest("CORPUS: silent allows stay silent", () => {

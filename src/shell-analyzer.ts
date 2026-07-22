@@ -84,6 +84,13 @@ export interface ExecutedCommand {
    * argv[0] becomes an `unanalyzable` entry instead.
    */
   argv: (string | null)[];
+  /**
+   * Per-word literal fragments for argv words that contain expansions
+   * (`"$HOME/.env"` yields ["/.env"]). Empty arrays for fully literal
+   * words. Protected-path checks scan these so a variable prefix cannot
+   * smuggle a protected file past them.
+   */
+  argvFragments: string[][];
   /** Source text shown in prompts and logs. */
   display: string;
   /** True for sudo/eval/source/...: never coverable by allow rules. */
@@ -92,6 +99,8 @@ export interface ExecutedCommand {
 
 export interface FileEffect {
   target: string | null;
+  /** Literal fragments when the target contains expansions; see argvFragments. */
+  fragments: string[];
   display: string;
 }
 
@@ -121,40 +130,65 @@ function unescapeDoubleQuotedLit(value: string): string {
   return value.replace(/\\([$`"\\\n])/gs, "$1");
 }
 
+interface WordInfo {
+  /** Full literal text, or null when any part is an unresolvable expansion. */
+  text: string | null;
+  /**
+   * Runs of adjacent literal text when the word mixes literals with
+   * expansions (`"$HOME/.env"` -> ["/.env"], `"$A".e''nv` -> [".env"]).
+   * Empty when the word is fully literal (use `text`) or has no literal
+   * parts at all.
+   */
+  fragments: string[];
+}
+
 /**
- * The literal text of a word, or null when any part is an expansion the
- * analyzer cannot resolve (`$VAR`, `$(...)`, brace/glob expansion, ...).
+ * Analyze one word: full literal text plus literal fragments around
+ * expansions. Fragments exist so protected-path checks still see the
+ * literal tail of `$HOME/.ssh/id_rsa`-style words.
  */
-function literalWordText(word: MvdanNode | null | undefined): string | null {
+function analyzeWord(word: MvdanNode | null | undefined): WordInfo {
   if (!word) {
-    return null;
+    return { text: null, fragments: [] };
   }
-  let text = "";
-  for (const part of word.Parts || []) {
-    const type = syntax.NodeType(part);
-    if (type === "Lit") {
-      text += unescapeLit(String(part.Value ?? ""));
-    } else if (type === "SglQuoted") {
-      if (part.Dollar) {
-        text += unescapeLit(String(part.Value ?? ""));
-      } else {
-        text += String(part.Value ?? "");
-      }
-    } else if (type === "DblQuoted") {
-      const inner = (part.Parts || []) as MvdanNode[];
-      let quotedText = "";
-      for (const innerPart of inner) {
-        if (syntax.NodeType(innerPart) !== "Lit") {
-          return null;
-        }
-        quotedText += unescapeDoubleQuotedLit(String(innerPart.Value ?? ""));
-      }
-      text += quotedText;
-    } else {
-      return null;
+
+  const runs: string[] = [];
+  let current = "";
+  let literal = true;
+
+  const breakRun = (): void => {
+    literal = false;
+    if (current) {
+      runs.push(current);
+      current = "";
     }
+  };
+
+  const visitParts = (parts: MvdanNode[], insideDoubleQuotes: boolean): void => {
+    for (const part of parts) {
+      const type = syntax.NodeType(part);
+      if (type === "Lit") {
+        const value = String(part.Value ?? "");
+        current += insideDoubleQuotes ? unescapeDoubleQuotedLit(value) : unescapeLit(value);
+      } else if (type === "SglQuoted") {
+        const value = String(part.Value ?? "");
+        current += part.Dollar ? unescapeLit(value) : value;
+      } else if (type === "DblQuoted") {
+        visitParts((part.Parts || []) as MvdanNode[], true);
+      } else {
+        breakRun();
+      }
+    }
+  };
+
+  visitParts((word.Parts || []) as MvdanNode[], false);
+  if (literal) {
+    return { text: current, fragments: [] };
   }
-  return text;
+  if (current) {
+    runs.push(current);
+  }
+  return { text: null, fragments: runs };
 }
 
 function sliceSource(source: string, node: MvdanNode): string {
@@ -175,8 +209,8 @@ function isDigitsOrDash(value: string): boolean {
 }
 
 interface WrapperUnwrapResult {
-  argv: (string | null)[];
-  /** Null when the child command could not be located confidently. */
+  argv: WordInfo[];
+  /** False when the child command could not be located confidently. */
   ok: boolean;
 }
 
@@ -210,7 +244,7 @@ const WRAPPER_BARE_FLAGS: Record<string, ReadonlySet<string>> = {
  * Locate the command a wrapper runs. Returns ok=false when any argument is
  * not understood - the caller then treats the whole invocation as unknown.
  */
-function unwrapWrapper(wrapper: string, args: (string | null)[]): WrapperUnwrapResult {
+function unwrapWrapper(wrapper: string, args: WordInfo[]): WrapperUnwrapResult {
   const valueFlags = WRAPPER_VALUE_FLAGS[wrapper] ?? new Set<string>();
   const bareFlags = WRAPPER_BARE_FLAGS[wrapper] ?? new Set<string>();
   let index = 0;
@@ -218,7 +252,7 @@ function unwrapWrapper(wrapper: string, args: (string | null)[]): WrapperUnwrapR
   let sawCommandLookup = false;
 
   while (index < args.length) {
-    const arg = args[index];
+    const arg = args[index].text;
     if (arg === null) {
       return { argv: [], ok: false };
     }
@@ -263,7 +297,7 @@ function unwrapWrapper(wrapper: string, args: (string | null)[]): WrapperUnwrapR
 
   if (wrapper === "command" && sawCommandLookup) {
     // `command -v name` only prints how `name` would resolve; nothing runs.
-    return { argv: ["which", ...args.slice(index)], ok: true };
+    return { argv: [{ text: "which", fragments: [] }, ...args.slice(index)], ok: true };
   }
 
   return { argv: args.slice(index), ok: true };
@@ -275,10 +309,10 @@ interface ShellCInvocation {
 }
 
 /** Detect `bash -c 'script'` (also `-lc` style clusters). */
-function findShellCScript(args: (string | null)[]): ShellCInvocation {
+function findShellCScript(args: WordInfo[]): ShellCInvocation {
   let cFlagSeen = false;
   for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
+    const arg = args[index].text;
     if (arg === null) {
       if (cFlagSeen) {
         return { script: null, found: true };
@@ -330,14 +364,16 @@ function processRedirect(node: MvdanNode, source: string, analysis: ShellAnalysi
     return; // <& duplicates an input fd
   }
 
-  const target = literalWordText(node.Word);
+  const targetInfo = analyzeWord(node.Word);
+  const target = targetInfo.text;
+  const fragments = targetInfo.fragments;
 
   if (op === REDIRECT_OPS.dplOut) {
     if (target !== null && isDigitsOrDash(target)) {
       return; // 2>&1, >&2, >&- style fd duplication
     }
     // csh-style `>& file` writes the target
-    analysis.writes.push({ target, display });
+    analysis.writes.push({ target, fragments, display });
     if (target === null) {
       pushUnique(analysis.unanalyzable, `redirection target contains an expansion: ${display}`);
     }
@@ -348,7 +384,7 @@ function processRedirect(node: MvdanNode, source: string, analysis: ShellAnalysi
     if (target !== null && SINK_DEVICES.has(target)) {
       return;
     }
-    analysis.writes.push({ target, display });
+    analysis.writes.push({ target, fragments, display });
     if (target === null) {
       pushUnique(analysis.unanalyzable, `redirection target contains an expansion: ${display}`);
     }
@@ -359,9 +395,9 @@ function processRedirect(node: MvdanNode, source: string, analysis: ShellAnalysi
     if (target !== null && SINK_DEVICES.has(target)) {
       return;
     }
-    analysis.reads.push({ target, display });
+    analysis.reads.push({ target, fragments, display });
     if (op === REDIRECT_OPS.rdrInOut) {
-      analysis.writes.push({ target, display });
+      analysis.writes.push({ target, fragments, display });
     }
     if (target === null) {
       pushUnique(analysis.unanalyzable, `redirection target contains an expansion: ${display}`);
@@ -378,33 +414,34 @@ function processCallExpr(node: MvdanNode, source: string, analysis: ShellAnalysi
     return; // pure assignment statement; substitutions in values are walked
   }
 
-  let argv: (string | null)[] = words.map((word) => literalWordText(word));
+  let argvInfo: WordInfo[] = words.map((word) => analyzeWord(word));
   const display = sliceSource(source, node);
 
   // Unwrap wrapper chains: `timeout 5 env FOO=1 cargo test` -> `cargo test`.
   let guard = 0;
-  while (argv.length > 0 && argv[0] !== null && WRAPPER_EXECUTABLES.has(argv[0]) && guard < 10) {
+  while (argvInfo.length > 0 && argvInfo[0].text !== null && WRAPPER_EXECUTABLES.has(argvInfo[0].text) && guard < 10) {
     guard += 1;
-    const unwrapped = unwrapWrapper(argv[0], argv.slice(1));
+    const wrapper = argvInfo[0].text;
+    const unwrapped = unwrapWrapper(wrapper, argvInfo.slice(1));
     if (!unwrapped.ok) {
-      pushUnique(analysis.unanalyzable, `cannot locate the command run by '${argv[0]}': ${display}`);
+      pushUnique(analysis.unanalyzable, `cannot locate the command run by '${wrapper}': ${display}`);
       return;
     }
     if (unwrapped.argv.length === 0) {
       // Bare wrapper (`env` alone prints the environment): evaluate as itself.
       break;
     }
-    argv = unwrapped.argv;
+    argvInfo = unwrapped.argv;
   }
 
-  const executable = argv[0];
+  const executable = argvInfo[0].text;
   if (executable === null) {
     pushUnique(analysis.unanalyzable, `executable name contains an expansion: ${display}`);
     return;
   }
 
   if (SHELL_INTERPRETERS.has(executable)) {
-    const invocation = findShellCScript(argv.slice(1));
+    const invocation = findShellCScript(argvInfo.slice(1));
     if (invocation.found) {
       if (invocation.script === null) {
         pushUnique(analysis.unanalyzable, `shell -c script is not a literal string: ${display}`);
@@ -418,12 +455,18 @@ function processCallExpr(node: MvdanNode, source: string, analysis: ShellAnalysi
       return;
     }
     // A shell run on a script file (or interactively) stays opaque.
-    analysis.commands.push({ argv, display, opaque: true });
+    analysis.commands.push({
+      argv: argvInfo.map((word) => word.text),
+      argvFragments: argvInfo.map((word) => word.fragments),
+      display,
+      opaque: true,
+    });
     return;
   }
 
   analysis.commands.push({
-    argv,
+    argv: argvInfo.map((word) => word.text),
+    argvFragments: argvInfo.map((word) => word.fragments),
     display,
     opaque: OPAQUE_EXECUTABLES.has(executable),
   });

@@ -457,7 +457,9 @@ Rules are **word-prefix lists**, not globs:
     "ask": ["git diff"],          // force a prompt even though the registry vouches
     "deny": ["git push --force"],
     "syntax": {                    // optional; these are the defaults
-      "subshells": "deny",         // `(...)` and `{ ...; }`
+      // all default-denied constructs: `(...)`, `{ ...; }`,
+      // function declarations, coprocesses
+      "subshells": "deny",
       "unanalyzable": "ask"        // parse failures etc. (fails closed)
     },
     "registryOverrides": {}
@@ -493,6 +495,8 @@ Certain paths are secrets and are **denied to every bash command by default**, o
   "protectedPaths": ["*.secret", "vault-*"]
 }
 ```
+
+Protected-path checks also see the **literal fragments** of arguments and redirect targets that contain expansions, so `cat "$HOME/.env"` and `tr x y < "$DIR/.env"` are denied even though the full path cannot be resolved statically. The residual limitation: a variable whose *entire value* names a protected file (`FILE=.env; cat $FILE`) cannot be caught without runtime dataflow — protected paths are a tripwire against accidental and casual access, not a sandbox. (Restricted registry rows already refuse to vouch for any invocation carrying expansions, and unknown commands with expansions still prompt.)
 
 > **Migrating from the pre-redesign format:** glob maps like `"rg *": "allow"` and the `bashSafety` section are no longer read; loading a config that contains them logs a one-time warning with suggested prefix-rule replacements. Most old allow entries are simply covered by the registry and can be dropped; `.env`-style deny globs are covered by protected paths.
 

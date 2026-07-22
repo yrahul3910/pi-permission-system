@@ -110,6 +110,19 @@ runTest("SA: redirection targets are captured; sinks and fd dups are free", () =
   assert.deepEqual(cshStyle.writes.map((w) => w.target), ["file.txt"]);
 });
 
+runTest("SA: literal fragments survive around expansions", () => {
+  const analysis = analyzeShellCommand('cat "$HOME/.env"');
+  assert.deepEqual(analysis.commands[0].argv, ["cat", null]);
+  assert.deepEqual(analysis.commands[0].argvFragments[1], ["/.env"]);
+
+  const adjacent = analyzeShellCommand("cat \"$A\".e''nv");
+  assert.deepEqual(adjacent.commands[0].argvFragments[1], [".env"]);
+
+  const redirect = analyzeShellCommand('tr x y < "$HOME/.env"');
+  assert.deepEqual(redirect.reads[0].target, null);
+  assert.deepEqual(redirect.reads[0].fragments, ["/.env"]);
+});
+
 runTest("SA: expansion in a redirect target fails closed", () => {
   const analysis = analyzeShellCommand("echo hi > $OUT");
   assert.ok(analysis.unanalyzable.some((entry) => entry.includes("redirection target")));

@@ -134,13 +134,22 @@ interface PieceOutcome {
 }
 
 function evaluateCommandPiece(command: ExecutedCommand, context: BashEvaluationContext): PieceOutcome {
-  for (const token of command.argv) {
-    if (token === null) {
+  for (let index = 0; index < command.argv.length; index += 1) {
+    const token = command.argv[index];
+    if (token !== null) {
+      const protectedHit = matchProtectedToken(token, context.protectedPaths);
+      if (protectedHit) {
+        return { state: "deny", reason: `touches protected path ('${token}' matches '${protectedHit}')` };
+      }
       continue;
     }
-    const protectedHit = matchProtectedToken(token, context.protectedPaths);
-    if (protectedHit) {
-      return { state: "deny", reason: `touches protected path ('${token}' matches '${protectedHit}')` };
+    // Words with expansions still expose their literal fragments, so a
+    // variable prefix cannot smuggle a protected path ("$HOME/.env").
+    for (const fragment of command.argvFragments[index] ?? []) {
+      const protectedHit = matchProtectedToken(fragment, context.protectedPaths);
+      if (protectedHit) {
+        return { state: "deny", reason: `touches protected path ('${fragment}' matches '${protectedHit}')` };
+      }
     }
   }
 
@@ -227,24 +236,37 @@ export function evaluateBashCommand(command: string, context: BashEvaluationCont
     );
   }
 
-  for (const effect of analysis.reads) {
-    if (effect.target === null) {
-      continue; // already reported as unanalyzable
+  const matchEffectProtected = (effect: { target: string | null; fragments: string[] }): { token: string; pattern: string } | null => {
+    if (effect.target !== null) {
+      const hit = matchProtectedToken(effect.target, context.protectedPaths);
+      return hit ? { token: effect.target, pattern: hit } : null;
     }
-    const protectedHit = matchProtectedToken(effect.target, context.protectedPaths);
+    // Expanded targets already fail closed to ask; literal fragments can
+    // still upgrade them to deny ("< $HOME/.env").
+    for (const fragment of effect.fragments) {
+      const hit = matchProtectedToken(fragment, context.protectedPaths);
+      if (hit) {
+        return { token: fragment, pattern: hit };
+      }
+    }
+    return null;
+  };
+
+  for (const effect of analysis.reads) {
+    const protectedHit = matchEffectProtected(effect);
     if (protectedHit) {
-      addPiece(effect.display, `reads protected path ('${effect.target}' matches '${protectedHit}')`, "deny");
+      addPiece(effect.display, `reads protected path ('${protectedHit.token}' matches '${protectedHit.pattern}')`, "deny");
     }
   }
 
   for (const effect of analysis.writes) {
-    if (effect.target === null) {
-      continue; // already reported as unanalyzable
-    }
-    const protectedHit = matchProtectedToken(effect.target, context.protectedPaths);
+    const protectedHit = matchEffectProtected(effect);
     if (protectedHit) {
-      addPiece(effect.display, `writes protected path ('${effect.target}' matches '${protectedHit}')`, "deny");
+      addPiece(effect.display, `writes protected path ('${protectedHit.token}' matches '${protectedHit.pattern}')`, "deny");
       continue;
+    }
+    if (effect.target === null) {
+      continue; // already reported as unanalyzable (asks)
     }
     const writeState = context.resolveWriteState(effect.target);
     addPiece(effect.display, `writes '${effect.target}'`, writeState);

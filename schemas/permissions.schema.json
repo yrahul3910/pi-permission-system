@@ -62,7 +62,7 @@
           "properties": {
             "subshells": {
               "$ref": "#/$defs/permissionState",
-              "description": "Subshells `(...)` and brace groups `{ ...; }`. Default: deny."
+              "description": "Governs every construct the analyzer refuses by default: subshells `(...)`, brace groups `{ ...; }`, function declarations, and coprocesses. Default: deny."
             },
             "unanalyzable": {
               "$ref": "#/$defs/permissionState",
