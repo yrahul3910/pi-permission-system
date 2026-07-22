@@ -33,7 +33,7 @@ function buildSettingItems(config: PermissionSystemExtensionConfig): SettingItem
     {
       id: "yoloMode",
       label: "YOLO mode",
-      description: "Auto-approve ask-state permission checks, including subagent approval forwarding",
+      description: "Auto-approve ask-state permission checks, including subagent approval forwarding (this session only; never synced to other sessions)",
       currentValue: toOnOff(config.yoloMode),
       values: ON_OFF,
     },

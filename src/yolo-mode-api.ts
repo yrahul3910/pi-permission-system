@@ -1,5 +1,4 @@
 export interface YoloModeControlOptions {
-  persist?: boolean;
   source?: string;
 }
 

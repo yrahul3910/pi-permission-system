@@ -444,11 +444,16 @@ const tests: IssueTest[] = [
         assert.deepEqual(autoApproved, {});
         assert.equal(harness.prompts.length, 0);
 
-        writeFileSync(
-          join(harness.baseDir, "extension-config.json"),
-          `${JSON.stringify({ ...DEFAULT_EXTENSION_CONFIG, yoloMode: false }, null, 2)}\n`,
-          "utf8",
-        );
+        // Yolo mode is session-scoped: disable it for this session via the
+        // runtime API. The config file still contains yoloMode: true, so the
+        // reload below also proves a config refresh cannot re-enable it from
+        // the shared file.
+        const runtimeApi = (globalThis as Record<string, unknown>).__piPermissionSystem as
+          | { setYoloMode: (enabled: boolean) => { yoloMode: boolean } }
+          | undefined;
+        assert.ok(runtimeApi, "runtime API should be registered");
+        assert.equal(runtimeApi.setYoloMode(false).yoloMode, false);
+
         await runLifecycle(harness, "resources_discover", { reason: "reload" });
 
         const afterYoloDisabled = await runToolCall(harness, {
@@ -505,12 +510,13 @@ const tests: IssueTest[] = [
           { hasUI: true, selectResponse: "Reject" },
         );
 
-        writeFileSync(
-          join(harness.baseDir, "extension-config.json"),
-          `${JSON.stringify({ ...DEFAULT_EXTENSION_CONFIG, debug: true, yoloMode: true }, null, 2)}\n`,
-          "utf8",
-        );
-        await runLifecycle(harness, "resources_discover", { reason: "reload" });
+        // Yolo mode is session-scoped: enable it for this session via the
+        // runtime API (config file writes + reload no longer propagate it).
+        const runtimeApi = (globalThis as Record<string, unknown>).__piPermissionSystem as
+          | { setYoloMode: (enabled: boolean) => { yoloMode: boolean } }
+          | undefined;
+        assert.ok(runtimeApi, "runtime API should be registered");
+        runtimeApi.setYoloMode(true);
         await runToolCall(harness, {
           toolName: "bash",
           toolCallId: "issue-26-audit-auto",
@@ -523,11 +529,7 @@ const tests: IssueTest[] = [
           `${JSON.stringify({ bash: { deny: ["echo deny"] } }, null, 2)}\n`,
           "utf8",
         );
-        writeFileSync(
-          join(harness.baseDir, "extension-config.json"),
-          `${JSON.stringify({ ...DEFAULT_EXTENSION_CONFIG, debug: true, yoloMode: false }, null, 2)}\n`,
-          "utf8",
-        );
+        runtimeApi.setYoloMode(false);
         await runLifecycle(harness, "resources_discover", { reason: "reload" });
         await runToolCall(harness, {
           toolName: "bash",
