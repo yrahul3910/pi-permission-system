@@ -43,7 +43,7 @@ runTest("turn runtime formats compact elapsed durations", () => {
   assert.equal(formatTurnWorkingMessage(1_500), "Working... (1s)");
 });
 
-runTest("turn runtime updates the working message and resets when the turn ends", () => {
+runTest("turn runtime updates the working message and resets when the agent ends", () => {
   let now = 0;
   const scheduler = createFakeScheduler();
   const messages: Array<string | undefined> = [];
@@ -52,7 +52,7 @@ runTest("turn runtime updates the working message and resets when the turn ends"
     scheduler: scheduler.scheduler,
   });
 
-  tracker.start({ setWorkingMessage: (message) => messages.push(message) }, 4, now);
+  tracker.start({ setWorkingMessage: (message) => messages.push(message) }, now);
   assert.deepEqual(messages, ["Working... (0s)"]);
   assert.equal(scheduler.activeTimerCount(), 1);
 
@@ -60,7 +60,7 @@ runTest("turn runtime updates the working message and resets when the turn ends"
   scheduler.tick();
   assert.equal(messages.at(-1), "Working... (2s)");
 
-  tracker.stop(4);
+  tracker.stop();
   assert.equal(messages.at(-1), undefined);
   assert.equal(scheduler.activeTimerCount(), 0);
 });
@@ -74,7 +74,7 @@ runTest("turn runtime excludes nested permission waits", () => {
     scheduler: scheduler.scheduler,
   });
 
-  tracker.start({ setWorkingMessage: (message) => messages.push(message) }, 7, now);
+  tracker.start({ setWorkingMessage: (message) => messages.push(message) }, now);
   now = 1_500;
   scheduler.tick();
   assert.equal(messages.at(-1), "Working... (1s)");
@@ -96,7 +96,7 @@ runTest("turn runtime excludes nested permission waits", () => {
   scheduler.tick();
   assert.equal(messages.at(-1), "Working... (2s)");
 
-  tracker.stop(7);
+  tracker.stop();
 });
 
 console.log("All turn-runtime tests passed.");

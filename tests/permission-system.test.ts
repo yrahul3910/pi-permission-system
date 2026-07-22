@@ -319,7 +319,7 @@ await runAsyncTest("Extension registers only one supported session_start lifecyc
   }
 });
 
-await runAsyncTest("Extension shows the active turn runtime in Pi's working message", async () => {
+await runAsyncTest("Extension keeps the working runtime through tool-call turns until the agent ends", async () => {
   const workingMessages: Array<string | undefined> = [];
   const harness = createToolCallHarness(
     { defaultPolicy: { tools: "allow", bash: "allow", mcp: "allow", skills: "allow", special: "allow" } },
@@ -328,14 +328,15 @@ await runAsyncTest("Extension shows the active turn runtime in Pi's working mess
   );
 
   try {
-    await Promise.resolve(harness.handlers.turn_start?.(
-      { turnIndex: 3, timestamp: Date.now() },
+    assert.equal(harness.registeredEvents.includes("turn_end"), false);
+    await Promise.resolve(harness.handlers.agent_start?.(
+      {},
       createMockContext(harness.cwd, harness.prompts, { hasUI: true, workingMessages }),
     ));
     assert.equal(workingMessages.at(-1), "Working... (0s)");
 
-    await Promise.resolve(harness.handlers.turn_end?.(
-      { turnIndex: 3 },
+    await Promise.resolve(harness.handlers.agent_end?.(
+      {},
       createMockContext(harness.cwd, harness.prompts, { hasUI: true, workingMessages }),
     ));
     assert.equal(workingMessages.at(-1), undefined);

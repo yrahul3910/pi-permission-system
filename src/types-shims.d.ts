@@ -185,14 +185,7 @@ declare module "@earendil-works/pi-coding-agent" {
     text: string;
   }
 
-  export interface TurnStartEvent {
-    turnIndex: number;
-    timestamp: number;
-  }
-
-  export interface TurnEndEvent {
-    turnIndex: number;
-  }
+  export interface AgentStartEvent {}
 
   export interface ToolCallEvent {
     toolCallId: string;
@@ -205,9 +198,8 @@ declare module "@earendil-works/pi-coding-agent" {
     on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
     on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent>): void;
     on(event: "session_shutdown", handler: () => Promise<void> | void): void;
+    on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
     on(event: "agent_end", handler: () => Promise<void> | void): void;
-    on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
-    on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
     on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
     on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
     on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;

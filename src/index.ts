@@ -1,4 +1,4 @@
-import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type BeforeAgentStartEvent, type InputEvent, type ResourcesDiscoverEvent, type SessionStartEvent, type ToolCallEvent, type TurnEndEvent, type TurnStartEvent } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, isToolCallEventType, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type BeforeAgentStartEvent, type InputEvent, type ResourcesDiscoverEvent, type SessionStartEvent, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -1957,20 +1957,16 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     disposeFocusTracker();
   });
 
-  pi.on("agent_end", async () => {
-    turnRuntime.stop();
-  });
-
-  pi.on("turn_start", async (event: TurnStartEvent, ctx: ExtensionContext) => {
+  pi.on("agent_start", async (_event, ctx: ExtensionContext) => {
     if (!ctx.hasUI || ctx.mode === "rpc") {
       return;
     }
 
-    turnRuntime.start(ctx.ui, event.turnIndex, event.timestamp);
+    turnRuntime.start(ctx.ui);
   });
 
-  pi.on("turn_end", async (event: TurnEndEvent) => {
-    turnRuntime.stop(event.turnIndex);
+  pi.on("agent_end", async () => {
+    turnRuntime.stop();
   });
 
   pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx: ExtensionContext) => {

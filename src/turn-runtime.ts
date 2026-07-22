@@ -44,15 +44,14 @@ export function formatTurnWorkingMessage(elapsedMs: number): string {
 }
 
 /**
- * Tracks one Pi turn's active runtime. Permission prompts can be nested when
- * tools execute in parallel, so a reference count keeps the clock paused until
- * every outstanding prompt has been answered.
+ * Tracks one active Pi agent run. Permission prompts can be nested when tools
+ * execute in parallel, so a reference count keeps the clock paused until every
+ * outstanding prompt has been answered.
  */
 export class TurnRuntimeTracker {
   private readonly now: () => number;
   private readonly scheduler: TurnRuntimeScheduler;
   private startedAt: number | null = null;
-  private turnIndex: number | undefined;
   private pausedAt: number | null = null;
   private pausedDurationMs = 0;
   private pauseDepth = 0;
@@ -72,13 +71,12 @@ export class TurnRuntimeTracker {
     return this.getElapsedMs(this.now());
   }
 
-  start(ui: WorkingMessageUi, turnIndex: number | undefined, startedAt = this.now()): void {
+  start(ui: WorkingMessageUi, startedAt = this.now()): void {
     if (this.active) {
       this.finish(false);
     }
 
     this.ui = ui;
-    this.turnIndex = turnIndex;
     this.startedAt = Number.isFinite(startedAt) ? startedAt : this.now();
     this.pausedAt = null;
     this.pausedDurationMs = 0;
@@ -131,8 +129,8 @@ export class TurnRuntimeTracker {
     }
   }
 
-  stop(turnIndex?: number): void {
-    if (!this.active || (turnIndex !== undefined && turnIndex !== this.turnIndex)) {
+  stop(): void {
+    if (!this.active) {
       return;
     }
 
@@ -143,7 +141,6 @@ export class TurnRuntimeTracker {
     this.stopTimer();
     const ui = this.ui;
     this.startedAt = null;
-    this.turnIndex = undefined;
     this.pausedAt = null;
     this.pausedDurationMs = 0;
     this.pauseDepth = 0;
