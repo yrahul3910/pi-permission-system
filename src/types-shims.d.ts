@@ -5,6 +5,10 @@ declare namespace NodeJS {
 
   interface WriteStream {
     write(chunk: string): boolean;
+    /** Terminal height in rows; undefined when stdout is not a TTY. */
+    rows?: number;
+    /** Terminal width in columns; undefined when stdout is not a TTY. */
+    columns?: number;
   }
 
   interface Process {
