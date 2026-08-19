@@ -585,7 +585,7 @@ Notes:
 - A row only vouches for the plain read-only invocation; it never grants more. Deny rules, protected paths, and write-redirection policy still outrank a vouch, and rows with any restriction fields refuse to vouch for invocations carrying expansions like `$VAR`.
 - `unsafePatterns` entries are regex strings (e.g. `"unsafePatterns": ["\\bsystem\\s*\\("]`) compiled at load; an invalid regex is skipped with a warning.
 - Explicitly empty lists are treated as absent: `"cat": { "unsafeArgs": [] }` behaves like `"cat": {}`.
-- Overrides merge per executable across policy layers (global → project → agent frontmatter), later layers winning per key. In practice, define them in the JSONC policy files: the minimal agent-frontmatter YAML parser cannot express the arrays or `null` values this section needs.
+- Overrides merge per executable across policy layers (global policy → project policy → global agent frontmatter → project agent frontmatter), later layers winning per key. In practice, define them in the JSONC policy files: the minimal agent-frontmatter YAML parser cannot express the arrays or `null` values this section needs.
 
 #### Write redirections
 
