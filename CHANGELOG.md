@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Tall permission dialogs no longer make the screen jitter vertically. The prompt-compaction caps are now derived from the live terminal size (`process.stdout.rows`/`columns`) instead of a static 32-line/2200-character limit, and the compactor budgets word-wrapped rows rather than logical lines, so the dialog (prompt + options + borders + footer) fits inside the viewport instead of forcing the TUI to scroll on every repaint. Terminals too small to fit even a minimal prompt keep a floor of 4 lines / 200 characters, and non-TTY contexts keep the previous static caps.
+
 ## [0.8.0-patch.2] - 2026-07-22
 
 ### Changed
