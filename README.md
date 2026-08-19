@@ -14,6 +14,65 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
 
 <img width="1360" height="752" alt="image" src="https://github.com/user-attachments/assets/3e85190a-17fa-4d94-ac8e-efa54337df5d" />
 
+## Table of Contents
+
+- [Important: read this](#important-read-this)
+- [Coming from OpenCode?](#coming-from-opencode)
+  - [Start here](#start-here)
+  - [Important compatibility notes](#important-compatibility-notes)
+  - [Minimal Pi agent example](#minimal-pi-agent-example)
+  - [Compatibility matrix](#compatibility-matrix)
+  - [Most important difference](#most-important-difference)
+  - [Fast porting guide](#fast-porting-guide)
+  - [Practical takeaway](#practical-takeaway)
+- [Features](#features)
+- [Installation](#installation)
+  - [npm package](#npm-package)
+  - [Local extension folder](#local-extension-folder)
+- [Usage](#usage)
+  - [Quick Start](#quick-start)
+  - [Permission States](#permission-states)
+  - [Pi Integration Hooks](#pi-integration-hooks)
+- [Configuration](#configuration)
+  - [Extension Config File](#extension-config-file)
+  - [Desktop Notifications](#desktop-notifications)
+  - [Runtime YOLO Control](#runtime-yolo-control)
+  - [Global Policy File](#global-policy-file)
+  - [Global Per-Agent Overrides](#global-per-agent-overrides)
+  - [Project-Level Policy Files](#project-level-policy-files)
+- [Policy Reference](#policy-reference)
+  - [`defaultPolicy`](#defaultpolicy)
+  - [`tools`](#tools)
+  - [`bash`](#bash)
+    - [The safe-command registry](#the-safe-command-registry)
+    - [Configuring `registryOverrides`](#configuring-registryoverrides)
+    - [Write redirections](#write-redirections)
+  - [`protectedPaths`](#protectedpaths)
+  - [Bash Defaults](#bash-defaults)
+  - [`mcp`](#mcp)
+    - [MCP Tool Fallback via `tools.mcp`](#mcp-tool-fallback-via-toolsmcp)
+  - [`skills`](#skills)
+  - [`special`](#special)
+- [Common Recipes](#common-recipes)
+  - [Read-Only Mode](#read-only-mode)
+  - [Typical Developer Policy](#typical-developer-policy)
+  - [Restricted Bash Surface](#restricted-bash-surface)
+  - [MCP Discovery Only](#mcp-discovery-only)
+  - [Per-Agent Lockdown](#per-agent-lockdown)
+- [Technical Details](#technical-details)
+  - [Permission Prompt Summaries](#permission-prompt-summaries)
+  - [Subagent Permission Forwarding](#subagent-permission-forwarding)
+  - [Logging](#logging)
+  - [Architecture](#architecture)
+    - [Module Organization](#module-organization)
+    - [Performance Optimizations](#performance-optimizations)
+  - [Threat Model](#threat-model)
+  - [Schema Validation](#schema-validation)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [Related Pi Extensions](#related-pi-extensions)
+- [License](#license)
+
 ## Coming from OpenCode?
 
 Yes — this extension was designed so OpenCode-style agent permission policies can be ported into Pi with minimal friction.
@@ -480,7 +539,53 @@ Most read-only commands need no config at all. A declarative registry (`src/safe
 
 An unvouched invocation is evaluated like any unknown command, with one guard: **an allow rule only covers an unsafe-argument invocation if the rule names the argument** — `"sed -i"` opts into in-place edits, plain `"sed"` does not. Unsafe-pattern and expansion-carrying invocations of restricted rows cannot be rule-covered at all; they always prompt.
 
-`registryOverrides` adjusts the registry per executable: `null` disables a built-in row, an object replaces or adds one (same fields: `safeSubcommands`, `unsafeArgs`, `unsafePatterns` as regex strings).
+#### Configuring `registryOverrides`
+
+`registryOverrides` adjusts the registry per executable: `null` disables a built-in row, an object replaces or adds one (same fields: `safeSubcommands`, `unsafeArgs`, `unsafePatterns` as regex strings). It lives under the `bash` section of the global or project policy file:
+
+```jsonc
+// ~/.pi/agent/pi-permissions.jsonc
+{
+  "bash": {
+    "registryOverrides": {
+      // Disable a built-in row: sed loses its automatic vouch, so every sed
+      // invocation is evaluated like an unknown command (your prefix rules,
+      // then defaultPolicy.bash — i.e. it prompts under an empty config).
+      "sed": null,
+
+      // Add an unrestricted row for a command the registry doesn't know:
+      // plain `bat` invocations are vouched read-only, so
+      // `bat src/index.ts | head` runs without a prompt.
+      "bat": {},
+
+      // Add a restricted row: `yq` is vouched read-only, but in-place edits
+      // void the vouch and prompt unless an allow rule names the flag
+      // (`"yq -i"` would opt in, plain `"yq"` would not).
+      "yq": { "unsafeArgs": ["-i", "--inplace"] },
+
+      // Add a subcommand-structured row: only these read-only docker forms
+      // are vouched; `docker run ...` still prompts.
+      "docker": { "safeSubcommands": ["images", "inspect", "ps", "version"] },
+
+      // An object REPLACES the built-in row wholesale, it does not merge
+      // with it — to extend `jj` with `bookmark list`, restate the built-in
+      // subcommands and unsafe args you want to keep:
+      "jj": {
+        "safeSubcommands": ["bookmark list", "diff", "file list", "file show", "log", "op log", "show", "status"],
+        "unsafeArgs": ["--config", "--config-toml", "--config-file"]
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- Keys are executable names (the command word after wrappers are unwrapped). Opaque executables (`sudo`, `eval`, shells on script files) cannot be made safe this way — they always prompt.
+- A row only vouches for the plain read-only invocation; it never grants more. Deny rules, protected paths, and write-redirection policy still outrank a vouch, and rows with any restriction fields refuse to vouch for invocations carrying expansions like `$VAR`.
+- `unsafePatterns` entries are regex strings (e.g. `"unsafePatterns": ["\\bsystem\\s*\\("]`) compiled at load; an invalid regex is skipped with a warning.
+- Explicitly empty lists are treated as absent: `"cat": { "unsafeArgs": [] }` behaves like `"cat": {}`.
+- Overrides merge per executable across policy layers (global policy → project policy → global agent frontmatter → project agent frontmatter), later layers winning per key. In practice, define them in the JSONC policy files: the minimal agent-frontmatter YAML parser cannot express the arrays or `null` values this section needs.
 
 #### Write redirections
 
@@ -502,7 +607,7 @@ Protected-path checks also see the **literal fragments** of arguments and redire
 
 ### Bash Defaults
 
-Everything below ships built in and is what an **empty config** gives you. All of it is overridable (`registryOverrides`, `protectedPaths`, `bash.syntax`, `write:<path>` rules).
+Everything below ships built in and is what an **empty config** gives you. All of it is overridable ([`registryOverrides`](#configuring-registryoverrides), `protectedPaths`, `bash.syntax`, `write:<path>` rules).
 
 **Registry — always vouched read-only (no restrictions):**
 
@@ -676,7 +781,7 @@ Deny-by-default with a hand-picked surface — disable the registry rows you don
 }
 ```
 
-> Note: with `defaultPolicy.bash: "deny"`, registry-vouched commands still allow; add `ask`/`deny` rules (or `registryOverrides` with `null` rows) to tighten specific families.
+> Note: with `defaultPolicy.bash: "deny"`, registry-vouched commands still allow; add `ask`/`deny` rules (or [`registryOverrides`](#configuring-registryoverrides) with `null` rows) to tighten specific families.
 
 ### MCP Discovery Only
 
