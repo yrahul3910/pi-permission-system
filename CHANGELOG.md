@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `ask` permissions are now enforceable inside **in-process subagents** (e.g. [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents)). Those extensions spawn child sessions in the same process — with no router env hints and `hasUI=false` — so the subagent detector never recognized them and every `ask`-policy tool call was silently auto-denied. The detector now also treats a non-interactive session whose system prompt carries an `<active_agent>` tag (which pi-subagents injects for exactly this purpose) as a subagent, and forwarded `ask` prompts fall back to the interactive session discovered in-process when no `PI_AGENT_ROUTER_PARENT_SESSION_ID` env hint is present. The env hint stays authoritative for router-launched (separate-process) subagents.
 - Tall permission dialogs no longer make the screen jitter vertically. The prompt-compaction caps are now derived from the live terminal size (`process.stdout.rows`/`columns`) instead of a static 32-line/2200-character limit, and the compactor budgets word-wrapped rows rather than logical lines, so the dialog (prompt + options + borders + footer) fits inside the viewport instead of forcing the TUI to scroll on every repaint. Terminals too small to fit even a minimal prompt keep a floor of 4 lines / 200 characters, and non-TTY contexts keep the previous static caps.
 
 ## [0.8.0-patch.2] - 2026-07-22

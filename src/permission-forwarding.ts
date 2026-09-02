@@ -119,6 +119,14 @@ export function resolvePermissionForwardingTargetSessionId(options: {
   isSubagent: boolean;
   currentSessionId?: string | null;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Interactive session id discovered in-process, used when the runtime exposes
+   * no parent-session env hint. Router-launched subagents run in a separate
+   * process and rely on {@link SUBAGENT_PARENT_SESSION_ENV_KEY}; in-process
+   * subagents (e.g. tintinweb/pi-subagents) share the process with their
+   * interactive parent and cannot use process.env, so they fall back to this.
+   */
+  fallbackTargetSessionId?: string | null;
 }): string | null {
   if (options.hasUI) {
     return normalizePermissionForwardingSessionId(options.currentSessionId);
@@ -128,8 +136,12 @@ export function resolvePermissionForwardingTargetSessionId(options: {
     return null;
   }
 
-  return normalizePermissionForwardingSessionId(
-    options.env?.[SUBAGENT_PARENT_SESSION_ENV_KEY],
+  // The env hint wins when present (router-launched subagents in a separate
+  // process); otherwise fall back to the in-process interactive session.
+  return (
+    normalizePermissionForwardingSessionId(
+      options.env?.[SUBAGENT_PARENT_SESSION_ENV_KEY],
+    ) ?? normalizePermissionForwardingSessionId(options.fallbackTargetSessionId)
   );
 }
 
