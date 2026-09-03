@@ -246,6 +246,17 @@ let extensionConfig: PermissionSystemExtensionConfig = {
 let runtimeApi: PiPermissionSystemRuntimeApi | null = null;
 let focusTracker: TerminalFocusTracker | null = null;
 
+// Session id of the interactive (hasUI) session in this process, if any.
+//
+// In-process subagents (e.g. tintinweb/pi-subagents) run concurrently in the
+// same Node process with no env hints, so process.env cannot name the session a
+// non-UI child should forward its `ask` prompts to. The interactive session
+// records itself here so an in-process child can discover its forwarding parent.
+// This is set only from the hasUI branch and is deliberately never cleared on
+// the shared stop path — that path also runs inside child bindings, where
+// clearing would erase the parent's id out from under a concurrent subagent.
+let interactiveForwardingSessionId: string | null = null;
+
 const DESKTOP_NOTIFICATION_TITLE = "Pi: permission required";
 const DESKTOP_NOTIFICATION_BODY_MAX_LENGTH = 180;
 const extensionLogger = createPermissionSystemLogger({
@@ -982,8 +993,21 @@ function getSessionId(ctx: ExtensionContext): string {
   return "unknown";
 }
 
-function isSubagentExecutionContext(ctx: ExtensionContext): boolean {
+export function isSubagentExecutionContext(ctx: ExtensionContext): boolean {
   if (hasSubagentEnvHint()) {
+    return true;
+  }
+
+  // In-process subagents (e.g. tintinweb/pi-subagents) spawn child sessions in
+  // the same process: they set none of the router env hints, run with
+  // hasUI=false, and are not under the router's subagent-sessions directory.
+  // They do inject an <active_agent> tag into the child system prompt
+  // specifically so policy extensions can identify the agent, so a
+  // non-interactive session carrying that tag is such a child.
+  if (
+    !ctx.hasUI &&
+    getActiveAgentNameFromSystemPrompt(getContextSystemPrompt(ctx)) !== null
+  ) {
     return true;
   }
 
@@ -1378,11 +1402,12 @@ async function waitForForwardedPermissionApproval(
     isSubagent: isSubagentExecutionContext(ctx),
     currentSessionId: requesterSessionId,
     env: process.env,
+    fallbackTargetSessionId: interactiveForwardingSessionId,
   });
 
   if (!targetSessionId) {
     logPermissionForwardingError(
-      "Permission forwarding target session could not be resolved from subagent runtime metadata (expected PI_AGENT_ROUTER_PARENT_SESSION_ID)",
+      "Permission forwarding target session could not be resolved from subagent runtime metadata (expected PI_AGENT_ROUTER_PARENT_SESSION_ID, or an in-process interactive session for in-process subagents)",
     );
     return { approved: false, state: "denied" };
   }
@@ -2309,6 +2334,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     if (!location) {
       return;
     }
+
+    // Record this interactive session as the in-process forwarding parent so a
+    // concurrently running in-process subagent (which has no UI and no env hint
+    // naming its parent) can forward its `ask` prompts here. Set only after the
+    // location is confirmed — the request watcher is armed below in this same
+    // synchronous pass — so we never advertise a parent whose watcher never
+    // started, which would leave a child's forwarded request to time out.
+    interactiveForwardingSessionId = sessionId;
 
     permissionForwardingContext = ctx;
     if (
