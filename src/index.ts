@@ -993,7 +993,7 @@ function getSessionId(ctx: ExtensionContext): string {
   return "unknown";
 }
 
-function isSubagentExecutionContext(ctx: ExtensionContext): boolean {
+export function isSubagentExecutionContext(ctx: ExtensionContext): boolean {
   if (hasSubagentEnvHint()) {
     return true;
   }
@@ -2330,14 +2330,18 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     const sessionId = getSessionId(ctx);
-    // Record this interactive session as the in-process forwarding parent so a
-    // concurrently running in-process subagent (which has no UI and no env hint
-    // naming its parent) can forward its `ask` prompts here.
-    interactiveForwardingSessionId = sessionId;
     const location = ensurePermissionForwardingLocation(sessionId, ctx);
     if (!location) {
       return;
     }
+
+    // Record this interactive session as the in-process forwarding parent so a
+    // concurrently running in-process subagent (which has no UI and no env hint
+    // naming its parent) can forward its `ask` prompts here. Set only after the
+    // location is confirmed — the request watcher is armed below in this same
+    // synchronous pass — so we never advertise a parent whose watcher never
+    // started, which would leave a child's forwarded request to time out.
+    interactiveForwardingSessionId = sessionId;
 
     permissionForwardingContext = ctx;
     if (
