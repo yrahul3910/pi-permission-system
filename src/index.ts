@@ -22,6 +22,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmdirSync,
   unlinkSync,
@@ -369,6 +370,9 @@ function getPathBearingToolPath(
   input: unknown,
 ): string | null {
   const inputRecord = toRecord(input);
+  if (toolName === "bg_start") {
+    return getNonEmptyString(inputRecord.working_dir);
+  }
   const path =
     getNonEmptyString(inputRecord.path) ??
     getNonEmptyString(inputRecord.file_path);
@@ -742,9 +746,10 @@ function getPermissionLogContext(
 } {
   return {
     command:
-      result.toolName === "bash" && result.command ? result.command : undefined,
+      result.source === "bash" && result.command ? result.command : undefined,
     commandMetadata: createSensitiveLogMetadata(result.command),
-    bashEvaluation: result.toolName === "bash" ? result.bashEvaluation ?? null : undefined,
+    bashEvaluation:
+      result.source === "bash" ? (result.bashEvaluation ?? null) : undefined,
     target: result.target,
     toolInput: input,
   };
@@ -754,7 +759,14 @@ function getPatternApprovalSubject(
   result: PermissionCheckResult,
   input: unknown,
 ): string {
-  if (result.toolName === "bash" && result.command) {
+  if (result.toolName === "bg_start") {
+    const directory = getNonEmptyString(toRecord(input).working_dir);
+    return directory && result.command
+      ? JSON.stringify([directory, result.command])
+      : "";
+  }
+
+  if (result.source === "bash" && result.command) {
     return result.command;
   }
 
@@ -805,17 +817,30 @@ function applyPatternApprovalState(
     return result;
   }
 
-  if (result.toolName === "bash" && result.command) {
-    // An exact "Allow Always" approval covers this precise command text: the
-    // user confirmed it against a prompt that listed every blocking piece.
-    if (sessionApprovals.hasExactAllowApproval(result.toolName, result.command)) {
+  if (
+    (result.source === "bash" || result.toolName === "bg_start") &&
+    result.command
+  ) {
+    // Background approvals include the real working directory because relative
+    // paths can introduce different filesystem operations in another directory.
+    if (
+      sessionApprovals.hasExactAllowApproval(
+        result.toolName,
+        getPatternApprovalSubject(result, input),
+      )
+    ) {
       return { ...result, state: "allow" };
     }
 
     // Session family prefixes act like config allow rules, so the command is
     // re-evaluated with them included; every piece still gets checked.
     const sessionAllowPrefixes = sessionApprovals.getBashAllowPrefixes();
-    if (result.state !== "allow" && sessionAllowPrefixes.length > 0 && recheckBashWithSession) {
+    if (
+      result.state !== "allow" &&
+      result.source === "bash" &&
+      sessionAllowPrefixes.length > 0 &&
+      recheckBashWithSession
+    ) {
       return recheckBashWithSession(sessionAllowPrefixes);
     }
     return result;
@@ -868,7 +893,7 @@ function persistSessionApprovalDecision(
     // decision payload — and only fully approvable ask pieces yield any
     // (otherwise nothing is persisted; the decision still approves this
     // single call).
-    if (result.toolName !== "bash" || !result.command) {
+    if (result.source !== "bash" || !result.command) {
       return null;
     }
 
@@ -2793,25 +2818,53 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
     const rawInput = getEventInput(event);
     const inputRecord = toRecord(rawInput);
-    const input =
+    let permissionCwd = ctx.cwd;
+    let input = rawInput;
+    if (toolName === "bg_start") {
+      if (!getNonEmptyString(ctx.cwd)) {
+        return {
+          block: true,
+          reason:
+            "Starting a background command requires a nonempty session working directory.",
+        };
+      }
+      try {
+        permissionCwd = realpathSync(ctx.cwd);
+        input = {
+          ...inputRecord,
+          cwd: permissionCwd,
+          working_dir: realpathSync(
+            resolve(ctx.cwd, getNonEmptyString(inputRecord.working_dir) ?? "."),
+          ),
+        };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return {
+          block: true,
+          reason: `Cannot resolve the background working directory: ${reason}`,
+        };
+      }
+    } else if (
       ctx.cwd &&
       (getNonEmptyString(inputRecord.path) ||
         getNonEmptyString(inputRecord.file_path)) &&
       !getNonEmptyString(inputRecord.cwd)
-        ? { ...inputRecord, cwd: ctx.cwd }
-        : rawInput;
-    const externalDirectoryPath = ctx.cwd
+    ) {
+      input = { ...inputRecord, cwd: ctx.cwd };
+    }
+
+    const externalDirectoryPath = permissionCwd
       ? getPathBearingToolPath(toolName, input)
       : null;
 
     if (
-      ctx.cwd &&
+      permissionCwd &&
       externalDirectoryPath &&
-      isPathOutsideWorkingDirectory(externalDirectoryPath, ctx.cwd)
+      isPathOutsideWorkingDirectory(externalDirectoryPath, permissionCwd)
     ) {
       const externalPermissionInput = {
         path: externalDirectoryPath,
-        cwd: ctx.cwd,
+        cwd: permissionCwd,
       };
       const rawExtCheck = permissionManager.checkPermission(
         "external_directory",
@@ -2842,7 +2895,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           reason: formatExternalDirectoryDenyReason(
             toolName,
             externalDirectoryPath,
-            ctx.cwd,
+            permissionCwd,
             agentName ?? undefined,
           ),
         };
@@ -2852,7 +2905,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         const message = formatExternalDirectoryAskPrompt(
           toolName,
           externalDirectoryPath,
-          ctx.cwd,
+          permissionCwd,
           agentName ?? undefined,
         );
         if (!canRequestPermissionConfirmation(ctx)) {
@@ -2981,12 +3034,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       rawCheck,
       input,
       sessionApprovals,
-      toolName === "bash" && rawCheck.command
-        ? (sessionAllowPrefixes) => permissionManager.checkBashCommand(rawCheck.command ?? "", {
-          agentName: agentName ?? undefined,
-          cwd: getNonEmptyString(toRecord(input).cwd) ?? undefined,
-          sessionAllowPrefixes,
-        })
+      rawCheck.source === "bash" && rawCheck.command
+        ? (sessionAllowPrefixes) =>
+            permissionManager.checkPermission(
+              toolName,
+              input,
+              agentName ?? undefined,
+              sessionAllowPrefixes,
+            )
         : undefined,
     );
     const permissionLogContext = getPermissionLogContext(check, input);
@@ -3016,18 +3071,20 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
     if (check.state === "ask") {
       const unavailableReason =
-        toolName === "bash" && isToolCallEventType("bash", event)
-          ? `Running bash command '${event.input.command}' requires approval, but no interactive UI is available.`
+        check.source === "bash"
+          ? `Running ${toolName} command '${check.command}' requires approval, but no interactive UI is available.`
           : toolName === "mcp"
             ? "Using tool 'mcp' requires approval, but no interactive UI is available."
             : `Using tool '${toolName}' requires approval, but no interactive UI is available.`;
 
       // Offer "Allow for this session: ..." only when every blocking piece
       // is an ask with a clear plain-word command family.
-      const sessionFamilies = toolName === "bash"
-        ? collectSessionFamilies(check.bashEvaluation ?? { state: "ask", pieces: [] })
-          ?.map((family) => family.join(" "))
-        : undefined;
+      const sessionFamilies =
+        check.source === "bash"
+          ? collectSessionFamilies(
+              check.bashEvaluation ?? { state: "ask", pieces: [] },
+            )?.map((family) => family.join(" "))
+          : undefined;
 
       const message = formatAskPrompt(check, agentName ?? undefined, input);
       if (!canRequestPermissionConfirmation(ctx)) {
