@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -36,6 +36,7 @@ import {
   stripUnsupportedTemperatureFromPayload,
 } from "../src/model-option-compatibility.js";
 import { PermissionManager } from "../src/permission-manager.js";
+import { SessionApprovalStore } from "../src/session-approval-store.js";
 import {
   parseAllSkillPromptSections,
   resolveSkillPromptEntries,
@@ -4136,6 +4137,133 @@ await runAsyncTest(
         assert.match(String(result.reason), /session.*directory/i);
         assert.equal(harness.prompts.length, 0);
       }
+    } finally {
+      await harness.cleanup();
+    }
+  },
+);
+
+runTest(
+  "background session approvals never use command text as a wildcard rule",
+  () => {
+    const approvals = new SessionApprovalStore();
+    approvals.approveAlways("bg_start", "echo *");
+    assert.equal(approvals.hasSessionApproval("bg_start", "echo *"), true);
+    assert.equal(approvals.hasSessionApproval("bg_start", "echo other"), false);
+    assert.equal(approvals.hasSessionApproval("bash", "echo *"), false);
+    assert.deepEqual(
+      approvals.getApplicableRules("bg_start", "echo other"),
+      [],
+    );
+    approvals.clear();
+    assert.equal(approvals.hasSessionApproval("bg_start", "echo *"), false);
+  },
+);
+
+await runAsyncTest(
+  "tool-level background approvals cover only the literal command",
+  async () => {
+    for (const tools of [{}, { bg_start: "ask" }] as const) {
+      const harness = createToolCallHarness({ tools }, ["bg_start", "bash"]);
+      const event = {
+        toolName: "bg_start",
+        toolCallId: "exact",
+        input: { command: "echo *", title: "test" },
+      };
+      try {
+        assert.notEqual(
+          (
+            await runToolCall(harness, event, {
+              hasUI: true,
+              selectResponse: "Allow Always",
+            })
+          ).block,
+          true,
+        );
+        assert.notEqual((await runToolCall(harness, event)).block, true);
+        for (const command of ["pwd", "echo other", "cat .env"]) {
+          const result = await runToolCall(harness, {
+            ...event,
+            input: { command, title: "test" },
+          });
+          assert.equal(result.block, true, command);
+        }
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+);
+
+await runAsyncTest(
+  "background directory symlinks cannot bypass external-directory denial",
+  async () => {
+    const harness = createToolCallHarness(
+      { tools: { bg_start: "allow" }, special: { external_directory: "deny" } },
+      ["bg_start"],
+    );
+    try {
+      const project = join(harness.baseDir, "project");
+      const outside = join(harness.baseDir, "outside");
+      mkdirSync(project);
+      mkdirSync(outside);
+      symlinkSync(outside, join(project, "escape"), "dir");
+      harness.cwd = project;
+      const result = await runToolCall(harness, {
+        toolName: "bg_start",
+        toolCallId: "symlink-escape",
+        input: { command: "pwd", working_dir: "escape", title: "test" },
+      });
+      assert.equal(result.block, true);
+      assert.match(String(result.reason), /outside|external/i);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+);
+
+await runAsyncTest(
+  "background directory checks use real paths for the session and relative writes",
+  async () => {
+    const harness = createToolCallHarness(
+      {
+        tools: { bg_start: "allow", write: "ask" },
+        special: { external_directory: "deny" },
+      },
+      ["bg_start"],
+    );
+    try {
+      const actual = join(harness.baseDir, "actual");
+      mkdirSync(actual);
+      symlinkSync(actual, join(harness.baseDir, "alias"), "dir");
+      harness.cwd = join(harness.baseDir, "alias");
+      writeFileSync(
+        join(harness.baseDir, "pi-permissions.jsonc"),
+        JSON.stringify({
+          tools: {
+            bg_start: "allow",
+            write: "allow",
+            [`write:${join(realpathSync(actual), "output.txt")}`]: "deny",
+          },
+          special: { external_directory: "deny" },
+        }),
+      );
+      const event = {
+        toolName: "bg_start",
+        toolCallId: "real-path",
+        input: { command: "pwd", title: "test" },
+      };
+      assert.notEqual((await runToolCall(harness, event)).block, true);
+      const write = await runToolCall(harness, {
+        ...event,
+        input: { command: "printf x > output.txt", title: "test" },
+      });
+      assert.equal(write.block, true);
+      const missing = await runToolCall(harness, {
+        ...event,
+        input: { command: "pwd", working_dir: "missing", title: "test" },
+      });
+      assert.equal(missing.block, true);
     } finally {
       await harness.cleanup();
     }

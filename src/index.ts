@@ -22,6 +22,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmdirSync,
   unlinkSync,
@@ -758,7 +759,10 @@ function getPatternApprovalSubject(
   result: PermissionCheckResult,
   input: unknown,
 ): string {
-  if (result.source === "bash" && result.command) {
+  if (
+    (result.source === "bash" || result.toolName === "bg_start") &&
+    result.command
+  ) {
     return result.command;
   }
 
@@ -809,7 +813,10 @@ function applyPatternApprovalState(
     return result;
   }
 
-  if (result.source === "bash" && result.command) {
+  if (
+    (result.source === "bash" || result.toolName === "bg_start") &&
+    result.command
+  ) {
     // An exact "Allow Always" approval covers this precise command text: the
     // user confirmed it against a prompt that listed every blocking piece.
     if (
@@ -823,6 +830,7 @@ function applyPatternApprovalState(
     const sessionAllowPrefixes = sessionApprovals.getBashAllowPrefixes();
     if (
       result.state !== "allow" &&
+      result.source === "bash" &&
       sessionAllowPrefixes.length > 0 &&
       recheckBashWithSession
     ) {
@@ -2803,42 +2811,53 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
     const rawInput = getEventInput(event);
     const inputRecord = toRecord(rawInput);
-    if (toolName === "bg_start" && !getNonEmptyString(ctx.cwd)) {
-      return {
-        block: true,
-        reason:
-          "Starting a background command requires a nonempty session working directory.",
-      };
+    let permissionCwd = ctx.cwd;
+    let input = rawInput;
+    if (toolName === "bg_start") {
+      if (!getNonEmptyString(ctx.cwd)) {
+        return {
+          block: true,
+          reason:
+            "Starting a background command requires a nonempty session working directory.",
+        };
+      }
+      try {
+        permissionCwd = realpathSync(ctx.cwd);
+        input = {
+          ...inputRecord,
+          cwd: permissionCwd,
+          working_dir: realpathSync(
+            resolve(ctx.cwd, getNonEmptyString(inputRecord.working_dir) ?? "."),
+          ),
+        };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return {
+          block: true,
+          reason: `Cannot resolve the background working directory: ${reason}`,
+        };
+      }
+    } else if (
+      ctx.cwd &&
+      (getNonEmptyString(inputRecord.path) ||
+        getNonEmptyString(inputRecord.file_path)) &&
+      !getNonEmptyString(inputRecord.cwd)
+    ) {
+      input = { ...inputRecord, cwd: ctx.cwd };
     }
 
-    const input =
-      toolName === "bg_start"
-        ? {
-            ...inputRecord,
-            cwd: ctx.cwd,
-            working_dir: resolve(
-              ctx.cwd,
-              getNonEmptyString(inputRecord.working_dir) ?? ".",
-            ),
-          }
-        : ctx.cwd &&
-            (getNonEmptyString(inputRecord.path) ||
-              getNonEmptyString(inputRecord.file_path)) &&
-            !getNonEmptyString(inputRecord.cwd)
-          ? { ...inputRecord, cwd: ctx.cwd }
-          : rawInput;
-    const externalDirectoryPath = ctx.cwd
+    const externalDirectoryPath = permissionCwd
       ? getPathBearingToolPath(toolName, input)
       : null;
 
     if (
-      ctx.cwd &&
+      permissionCwd &&
       externalDirectoryPath &&
-      isPathOutsideWorkingDirectory(externalDirectoryPath, ctx.cwd)
+      isPathOutsideWorkingDirectory(externalDirectoryPath, permissionCwd)
     ) {
       const externalPermissionInput = {
         path: externalDirectoryPath,
-        cwd: ctx.cwd,
+        cwd: permissionCwd,
       };
       const rawExtCheck = permissionManager.checkPermission(
         "external_directory",
@@ -2869,7 +2888,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           reason: formatExternalDirectoryDenyReason(
             toolName,
             externalDirectoryPath,
-            ctx.cwd,
+            permissionCwd,
             agentName ?? undefined,
           ),
         };
@@ -2879,7 +2898,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         const message = formatExternalDirectoryAskPrompt(
           toolName,
           externalDirectoryPath,
-          ctx.cwd,
+          permissionCwd,
           agentName ?? undefined,
         );
         if (!canRequestPermissionConfirmation(ctx)) {

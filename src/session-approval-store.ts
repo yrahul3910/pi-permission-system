@@ -12,7 +12,7 @@ import { evaluatePermission, type PatternPermissionRule } from "./evaluate-permi
  *   substitution, every write is still evaluated on its own, so a family
  *   prefix can never smuggle anything past the other checks.
  *
- * Non-bash tools keep the original wildcard-pattern session rules.
+ * Background commands also use exact approvals. Other tools keep wildcard-pattern session rules.
  */
 export class SessionApprovalStore {
   private readonly rules: PatternPermissionRule[] = [];
@@ -94,7 +94,7 @@ export class SessionApprovalStore {
   }
 
   hasSessionApproval(tool: string, command: string): boolean {
-    if (tool.trim() === "bash") {
+    if (tool.trim() === "bash" || tool.trim() === "bg_start") {
       return this.hasExactAllowApproval(tool, command);
     }
     return this.evaluate(tool, command).state === "allow";
@@ -108,15 +108,17 @@ export class SessionApprovalStore {
   }
 
   /**
-   * Wildcard session rules for non-bash tools. Bash never evaluates through
-   * wildcards; its session approvals flow through getBashAllowPrefixes and
+   * Wildcard session rules for non-shell tools. Shell commands never evaluate through
+   * wildcards; their session approvals flow through getBashAllowPrefixes and
    * hasExactAllowApproval instead.
    */
   getApplicableRules(tool: string, _subject: string): PatternPermissionRule[] {
-    if (tool.trim() === "bash") {
+    if (tool.trim() === "bash" || tool.trim() === "bg_start") {
       return [];
     }
-    return this.rules.filter((rule) => rule.tool !== "bash");
+    return this.rules.filter(
+      (rule) => rule.tool !== "bash" && rule.tool !== "bg_start",
+    );
   }
 
   getRules(): PatternPermissionRule[] {
