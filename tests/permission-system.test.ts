@@ -4270,4 +4270,88 @@ await runAsyncTest(
   },
 );
 
+await runAsyncTest(
+  "background exact approvals stay in their resolved working directory",
+  async () => {
+    for (const source of ["default", "tool", "bash"] as const) {
+      const harness = createToolCallHarness({}, ["bg_start"]);
+      try {
+        const first = join(harness.baseDir, "first");
+        const second = join(harness.baseDir, "second");
+        mkdirSync(first);
+        mkdirSync(second);
+        symlinkSync(first, join(harness.baseDir, "first-alias"), "dir");
+        writeFileSync(
+          join(harness.baseDir, "pi-permissions.jsonc"),
+          JSON.stringify({
+            tools: {
+              bg_start:
+                source === "default"
+                  ? undefined
+                  : source === "tool"
+                    ? "ask"
+                    : "allow",
+              write: "ask",
+              [`write:${join(realpathSync(first), "output.txt")}`]:
+                source === "bash" ? "ask" : "allow",
+              [`write:${join(realpathSync(second), "output.txt")}`]: "ask",
+            },
+          }),
+        );
+        const event = {
+          toolName: "bg_start",
+          toolCallId: "scoped-approval",
+          input: {
+            command: "printf x > output.txt",
+            working_dir: "first",
+            title: "test",
+          },
+        };
+        assert.notEqual(
+          (
+            await runToolCall(harness, event, {
+              hasUI: true,
+              selectResponse: "Allow Always",
+            })
+          ).block,
+          true,
+        );
+        assert.equal(harness.prompts.length, 1);
+        assert.notEqual((await runToolCall(harness, event)).block, true);
+        assert.notEqual(
+          (
+            await runToolCall(harness, {
+              ...event,
+              input: { ...event.input, working_dir: "first-alias" },
+            })
+          ).block,
+          true,
+        );
+        const elsewhere = {
+          ...event,
+          input: { ...event.input, working_dir: "second" },
+        };
+        assert.equal(
+          (await runToolCall(harness, elsewhere)).block,
+          true,
+          source,
+        );
+        assert.notEqual(
+          (
+            await runToolCall(harness, elsewhere, {
+              hasUI: true,
+              selectResponse: "Allow Always",
+            })
+          ).block,
+          true,
+        );
+        assert.equal(harness.prompts.length, 2);
+        assert.notEqual((await runToolCall(harness, elsewhere)).block, true);
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+);
+
 console.log("All permission system tests passed.");

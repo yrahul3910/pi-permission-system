@@ -759,10 +759,14 @@ function getPatternApprovalSubject(
   result: PermissionCheckResult,
   input: unknown,
 ): string {
-  if (
-    (result.source === "bash" || result.toolName === "bg_start") &&
-    result.command
-  ) {
+  if (result.toolName === "bg_start") {
+    const directory = getNonEmptyString(toRecord(input).working_dir);
+    return directory && result.command
+      ? JSON.stringify([directory, result.command])
+      : "";
+  }
+
+  if (result.source === "bash" && result.command) {
     return result.command;
   }
 
@@ -817,10 +821,13 @@ function applyPatternApprovalState(
     (result.source === "bash" || result.toolName === "bg_start") &&
     result.command
   ) {
-    // An exact "Allow Always" approval covers this precise command text: the
-    // user confirmed it against a prompt that listed every blocking piece.
+    // Background approvals include the real working directory because relative
+    // paths can introduce different filesystem operations in another directory.
     if (
-      sessionApprovals.hasExactAllowApproval(result.toolName, result.command)
+      sessionApprovals.hasExactAllowApproval(
+        result.toolName,
+        getPatternApprovalSubject(result, input),
+      )
     ) {
       return { ...result, state: "allow" };
     }
