@@ -3867,4 +3867,181 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
   }
 });
 
+await runAsyncTest(
+  "background commands use bash policy despite a tool-level allow",
+  async () => {
+    const harness = createToolCallHarness(
+      {
+        tools: { bg_start: "allow", write: "ask" },
+        defaultPolicy: { bash: "ask" },
+      },
+      ["bg_start"],
+    );
+    try {
+      for (const [command, blocked] of [
+        ["pwd", false],
+        ["cat .env", true],
+        ["pwd && custom-deploy", true],
+        ["printf x > /non-temporary-path/output.txt", true],
+      ] as const) {
+        const result = await runToolCall(harness, {
+          toolName: "bg_start",
+          toolCallId: command,
+          input: { command, title: "test" },
+        });
+        assert.equal(result.block === true, blocked, command);
+      }
+    } finally {
+      await harness.cleanup();
+    }
+  },
+);
+
+await runAsyncTest(
+  "background working directories respect external-directory policy and ignore spoofed cwd",
+  async () => {
+    const harness = createToolCallHarness(
+      {
+        tools: { bg_start: "allow" },
+        special: { external_directory: "deny" },
+      },
+      ["bg_start"],
+    );
+    try {
+      const result = await runToolCall(harness, {
+        toolName: "bg_start",
+        toolCallId: "outside",
+        input: { command: "pwd", working_dir: "..", cwd: "/", title: "test" },
+      });
+      assert.equal(result.block, true);
+      assert.match(String(result.reason), /outside|external/i);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+);
+
+await runAsyncTest(
+  "background prompts show the command and cwd, and exact approval cannot allow a different command",
+  async () => {
+    const harness = createToolCallHarness(
+      { tools: { bg_start: "allow" }, defaultPolicy: { bash: "ask" } },
+      ["bg_start"],
+    );
+    try {
+      const command = {
+        toolName: "bg_start",
+        toolCallId: "first",
+        input: { command: "custom-build", title: "test" },
+      };
+      const first = await runToolCall(harness, command, {
+        hasUI: true,
+        selectResponse: "Allow Always",
+      });
+      assert.notEqual(first.block, true);
+      assert.ok(
+        harness.prompts.some(
+          (prompt) =>
+            prompt.includes("custom-build") &&
+            prompt.includes(harness.cwd) &&
+            prompt.includes("bg_start"),
+        ),
+      );
+      assert.notEqual(
+        (await runToolCall(harness, { ...command, toolCallId: "again" })).block,
+        true,
+      );
+      const different = await runToolCall(harness, {
+        ...command,
+        toolCallId: "other",
+        input: { command: "custom-deploy", title: "test" },
+      });
+      assert.equal(different.block, true);
+      const protectedRead = await runToolCall(harness, {
+        ...command,
+        toolCallId: "protected",
+        input: { command: "cat .env", title: "test" },
+      });
+      assert.equal(protectedRead.block, true);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+);
+
+runTest(
+  "background commands evaluate relative paths and session families in the requested directory",
+  () => {
+    const { manager, cleanup } = createManager({
+      tools: {
+        bg_start: "allow",
+        write: "ask",
+        "write:/workspace/project/output.txt": "allow",
+      },
+      defaultPolicy: { bash: "ask" },
+    });
+    try {
+      const input = {
+        command: "custom-build && pwd",
+        cwd: "/workspace",
+        working_dir: "project",
+      };
+      assert.equal(manager.checkPermission("bg_start", input).state, "ask");
+      const allowed = manager.checkPermission("bg_start", input, undefined, [
+        ["custom-build"],
+      ]);
+      assert.equal(allowed.state, "allow");
+      assert.equal(allowed.toolName, "bg_start");
+      assert.equal(allowed.source, "bash");
+      assert.equal(
+        manager.checkPermission("bg_start", {
+          ...input,
+          command: "printf x > output.txt",
+        }).state,
+        "allow",
+      );
+      assert.equal(
+        manager.checkPermission("bg_start", {
+          ...input,
+          command: "printf x > output.txt",
+          working_dir: "other",
+        }).state,
+        "ask",
+      );
+      assert.equal(
+        manager.checkPermission(
+          "bg_start",
+          { ...input, command: "cat .env" },
+          undefined,
+          [["cat"]],
+        ).state,
+        "deny",
+      );
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+runTest("explicit background tool denies and asks are retained", () => {
+  for (const state of ["deny", "ask"] as const) {
+    const { manager, cleanup } = createManager({
+      tools: { bg_start: state },
+      bash: { allow: ["pwd"] },
+    });
+    try {
+      assert.equal(
+        manager.checkPermission("bg_start", { command: "pwd" }).state,
+        state,
+      );
+      assert.equal(
+        manager.checkPermission("bg_start", { command: "cat .env" }).state,
+        "deny",
+      );
+    } finally {
+      cleanup();
+    }
+  }
+});
+
 console.log("All permission system tests passed.");

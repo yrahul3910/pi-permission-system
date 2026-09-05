@@ -1166,7 +1166,12 @@ export class PermissionManager {
     );
   }
 
-  checkPermission(toolName: string, input: unknown, agentName?: string): PermissionCheckResult {
+  checkPermission(
+    toolName: string,
+    input: unknown,
+    agentName?: string,
+    sessionAllowPrefixes: readonly string[][] = [],
+  ): PermissionCheckResult {
     const { merged, layers, compiledTools, compiledSpecial, compiledSkills, compiledMcp } = this.resolvePermissions(agentName);
     const normalizedToolName = toolName.trim();
     const toolMatch = findCompiledPermissionMatch(compiledTools, normalizedToolName);
@@ -1202,11 +1207,42 @@ export class PermissionManager {
       };
     }
 
-    if (normalizedToolName === "bash") {
+    if (normalizedToolName === "bash" || normalizedToolName === "bg_start") {
+      if (normalizedToolName === "bg_start" && toolMatch?.state === "deny") {
+        return {
+          toolName,
+          state: "deny",
+          matchedPattern: toolMatch.matchedPattern,
+          source: "tool",
+        };
+      }
       const record = toRecord(input);
       const command = typeof record.command === "string" ? record.command : "";
-      const cwd = getNonEmptyString(record.cwd) ?? process.cwd();
-      return this.evaluateBash(command, cwd, toolName, agentName, []);
+      const baseCwd = getNonEmptyString(record.cwd) ?? process.cwd();
+      const cwd =
+        normalizedToolName === "bg_start"
+          ? resolve(baseCwd, getNonEmptyString(record.working_dir) ?? ".")
+          : baseCwd;
+      const evaluation = this.evaluateBash(
+        command,
+        cwd,
+        toolName,
+        agentName,
+        sessionAllowPrefixes,
+      );
+      if (
+        normalizedToolName === "bg_start" &&
+        toolMatch?.state === "ask" &&
+        evaluation.state === "allow"
+      ) {
+        return {
+          toolName,
+          state: "ask",
+          matchedPattern: toolMatch.matchedPattern,
+          source: "tool",
+        };
+      }
+      return evaluation;
     }
 
     if (normalizedToolName === "mcp") {

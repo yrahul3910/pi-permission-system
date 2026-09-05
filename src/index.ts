@@ -369,6 +369,9 @@ function getPathBearingToolPath(
   input: unknown,
 ): string | null {
   const inputRecord = toRecord(input);
+  if (toolName === "bg_start") {
+    return getNonEmptyString(inputRecord.working_dir);
+  }
   const path =
     getNonEmptyString(inputRecord.path) ??
     getNonEmptyString(inputRecord.file_path);
@@ -742,9 +745,10 @@ function getPermissionLogContext(
 } {
   return {
     command:
-      result.toolName === "bash" && result.command ? result.command : undefined,
+      result.source === "bash" && result.command ? result.command : undefined,
     commandMetadata: createSensitiveLogMetadata(result.command),
-    bashEvaluation: result.toolName === "bash" ? result.bashEvaluation ?? null : undefined,
+    bashEvaluation:
+      result.source === "bash" ? (result.bashEvaluation ?? null) : undefined,
     target: result.target,
     toolInput: input,
   };
@@ -754,7 +758,7 @@ function getPatternApprovalSubject(
   result: PermissionCheckResult,
   input: unknown,
 ): string {
-  if (result.toolName === "bash" && result.command) {
+  if (result.source === "bash" && result.command) {
     return result.command;
   }
 
@@ -805,17 +809,23 @@ function applyPatternApprovalState(
     return result;
   }
 
-  if (result.toolName === "bash" && result.command) {
+  if (result.source === "bash" && result.command) {
     // An exact "Allow Always" approval covers this precise command text: the
     // user confirmed it against a prompt that listed every blocking piece.
-    if (sessionApprovals.hasExactAllowApproval(result.toolName, result.command)) {
+    if (
+      sessionApprovals.hasExactAllowApproval(result.toolName, result.command)
+    ) {
       return { ...result, state: "allow" };
     }
 
     // Session family prefixes act like config allow rules, so the command is
     // re-evaluated with them included; every piece still gets checked.
     const sessionAllowPrefixes = sessionApprovals.getBashAllowPrefixes();
-    if (result.state !== "allow" && sessionAllowPrefixes.length > 0 && recheckBashWithSession) {
+    if (
+      result.state !== "allow" &&
+      sessionAllowPrefixes.length > 0 &&
+      recheckBashWithSession
+    ) {
       return recheckBashWithSession(sessionAllowPrefixes);
     }
     return result;
@@ -868,7 +878,7 @@ function persistSessionApprovalDecision(
     // decision payload — and only fully approvable ask pieces yield any
     // (otherwise nothing is persisted; the decision still approves this
     // single call).
-    if (result.toolName !== "bash" || !result.command) {
+    if (result.source !== "bash" || !result.command) {
       return null;
     }
 
@@ -2794,12 +2804,21 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     const rawInput = getEventInput(event);
     const inputRecord = toRecord(rawInput);
     const input =
-      ctx.cwd &&
-      (getNonEmptyString(inputRecord.path) ||
-        getNonEmptyString(inputRecord.file_path)) &&
-      !getNonEmptyString(inputRecord.cwd)
-        ? { ...inputRecord, cwd: ctx.cwd }
-        : rawInput;
+      toolName === "bg_start"
+        ? {
+            ...inputRecord,
+            cwd: ctx.cwd,
+            working_dir: resolve(
+              ctx.cwd,
+              getNonEmptyString(inputRecord.working_dir) ?? ".",
+            ),
+          }
+        : ctx.cwd &&
+            (getNonEmptyString(inputRecord.path) ||
+              getNonEmptyString(inputRecord.file_path)) &&
+            !getNonEmptyString(inputRecord.cwd)
+          ? { ...inputRecord, cwd: ctx.cwd }
+          : rawInput;
     const externalDirectoryPath = ctx.cwd
       ? getPathBearingToolPath(toolName, input)
       : null;
@@ -2981,12 +3000,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       rawCheck,
       input,
       sessionApprovals,
-      toolName === "bash" && rawCheck.command
-        ? (sessionAllowPrefixes) => permissionManager.checkBashCommand(rawCheck.command ?? "", {
-          agentName: agentName ?? undefined,
-          cwd: getNonEmptyString(toRecord(input).cwd) ?? undefined,
-          sessionAllowPrefixes,
-        })
+      rawCheck.source === "bash" && rawCheck.command
+        ? (sessionAllowPrefixes) =>
+            permissionManager.checkPermission(
+              toolName,
+              input,
+              agentName ?? undefined,
+              sessionAllowPrefixes,
+            )
         : undefined,
     );
     const permissionLogContext = getPermissionLogContext(check, input);
@@ -3016,18 +3037,20 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
     if (check.state === "ask") {
       const unavailableReason =
-        toolName === "bash" && isToolCallEventType("bash", event)
-          ? `Running bash command '${event.input.command}' requires approval, but no interactive UI is available.`
+        check.source === "bash"
+          ? `Running ${toolName} command '${check.command}' requires approval, but no interactive UI is available.`
           : toolName === "mcp"
             ? "Using tool 'mcp' requires approval, but no interactive UI is available."
             : `Using tool '${toolName}' requires approval, but no interactive UI is available.`;
 
       // Offer "Allow for this session: ..." only when every blocking piece
       // is an ask with a clear plain-word command family.
-      const sessionFamilies = toolName === "bash"
-        ? collectSessionFamilies(check.bashEvaluation ?? { state: "ask", pieces: [] })
-          ?.map((family) => family.join(" "))
-        : undefined;
+      const sessionFamilies =
+        check.source === "bash"
+          ? collectSessionFamilies(
+              check.bashEvaluation ?? { state: "ask", pieces: [] },
+            )?.map((family) => family.join(" "))
+          : undefined;
 
       const message = formatAskPrompt(check, agentName ?? undefined, input);
       if (!canRequestPermissionConfirmation(ctx)) {

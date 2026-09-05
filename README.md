@@ -288,6 +288,12 @@ The extension creates this file automatically when it is missing. It controls ex
 
 Debug output writes only under the extension directory by default. Set `PI_PERMISSION_SYSTEM_LOGS_DIR` to redirect the debug file to a specific directory. No debug output is printed to the terminal.
 
+### Background shell commands
+
+The `bg_start` tool uses the same command parser, protected-path rules, redirection checks, and session-approved command families as `bash`. Setting `tools.bg_start` to `allow` enables the tool but does not bypass bash policy. An explicit `ask` or `deny` for `bg_start` still applies to every invocation.
+
+The background tool's `working_dir` is resolved against the session directory before checking commands. A directory outside the session must also pass `special.external_directory`. Permission prompts identify `bg_start`, the command, and its working directory. Exact session approvals apply to that command; they do not approve every background job.
+
 ### Desktop Notifications
 
 When a tool call needs approval, the extension can pop a native desktop

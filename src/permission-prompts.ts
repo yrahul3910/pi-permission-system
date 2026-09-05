@@ -141,7 +141,7 @@ export function formatDenyReason(
   }
 
   const evaluationNotice =
-    result.toolName === "bash" && result.bashEvaluation?.state === "deny"
+    result.source === "bash" && result.bashEvaluation?.state === "deny"
       ? formatBashEvaluationNotice(result.bashEvaluation)
       : null;
   const evaluationSuffix = evaluationNotice ? `\n${evaluationNotice}\n` : "";
@@ -156,8 +156,8 @@ export function formatUserDeniedReason(
   const base =
     (result.source === "mcp" || result.toolName === "mcp") && result.target
       ? `User denied MCP target '${result.target}'.`
-      : result.toolName === "bash" && result.command
-        ? `User denied bash command '${result.command}'.`
+      : result.source === "bash" && result.command
+        ? `User denied ${result.toolName} command '${result.command}'.`
         : `User denied tool '${result.toolName}'.`;
   const reasonSuffix = denialReason ? ` Reason: ${denialReason}.` : "";
 
@@ -385,13 +385,18 @@ export function formatAskPrompt(
 ): string {
   const subject = formatAgentSubject(agentName);
 
-  if (result.toolName === "bash") {
+  if (result.source === "bash") {
     const patternInfo = result.matchedPattern
       ? ` (matched '${result.matchedPattern}')`
       : "";
     const evaluationNotice = formatBashEvaluationNotice(result.bashEvaluation);
     const evaluationInfo = evaluationNotice ? `\n${evaluationNotice}\n` : " ";
-    return `${subject} requested bash command '${result.command || ""}'${patternInfo}.${evaluationInfo}Allow this command?`;
+    const directory =
+      result.toolName === "bg_start"
+        ? getNonEmptyString(toRecord(input).working_dir)
+        : undefined;
+    const location = directory ? ` in '${directory}'` : "";
+    return `${subject} requested ${result.toolName} command '${result.command || ""}'${location}${patternInfo}.${evaluationInfo}Allow this command?`;
   }
 
   if ((result.source === "mcp" || result.toolName === "mcp") && result.target) {
