@@ -385,7 +385,10 @@ export function formatAskPrompt(
 ): string {
   const subject = formatAgentSubject(agentName);
 
-  if (result.source === "bash") {
+  if (
+    result.source === "bash" ||
+    (result.toolName === "bg_start" && result.command)
+  ) {
     const patternInfo = result.matchedPattern
       ? ` (matched '${result.matchedPattern}')`
       : "";

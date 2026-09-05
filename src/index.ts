@@ -2803,6 +2803,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
     const rawInput = getEventInput(event);
     const inputRecord = toRecord(rawInput);
+    if (toolName === "bg_start" && !getNonEmptyString(ctx.cwd)) {
+      return {
+        block: true,
+        reason:
+          "Starting a background command requires a nonempty session working directory.",
+      };
+    }
+
     const input =
       toolName === "bg_start"
         ? {

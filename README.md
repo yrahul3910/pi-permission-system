@@ -290,9 +290,9 @@ Debug output writes only under the extension directory by default. Set `PI_PERMI
 
 ### Background shell commands
 
-The `bg_start` tool uses the same command parser, protected-path rules, redirection checks, and session-approved command families as `bash`. Setting `tools.bg_start` to `allow` enables the tool but does not bypass bash policy. An explicit `ask` or `deny` for `bg_start` still applies to every invocation.
+The `bg_start` tool uses the same command parser, protected-path rules, redirection checks, and session-approved command families as `bash`. Setting `tools.bg_start` to `allow` enables the tool but does not bypass bash policy. The matching tool rule, or `defaultPolicy.tools` when no rule matches, also applies. A tool-level `ask` requires approval even for a command bash policy allows, and a tool-level `deny` blocks the invocation.
 
-The background tool's `working_dir` is resolved against the session directory before checking commands. A directory outside the session must also pass `special.external_directory`. Permission prompts identify `bg_start`, the command, and its working directory. Exact session approvals apply to that command; they do not approve every background job.
+The background tool's `working_dir` is resolved against the session directory before checking commands. Calls with a missing session directory are blocked; neither the process directory nor a caller-supplied `cwd` can substitute for it. A directory outside the session must also pass `special.external_directory`. Permission prompts identify `bg_start`, the command, and its working directory, including when a tool-level policy requires approval. Exact command approvals remain specific to their tool. Session-approved command families are intentionally shared between `bash` and `bg_start`; both use the same bash policy, while background tool and protected-path restrictions still apply.
 
 ### Desktop Notifications
 

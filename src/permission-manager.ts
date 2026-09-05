@@ -1208,12 +1208,16 @@ export class PermissionManager {
     }
 
     if (normalizedToolName === "bash" || normalizedToolName === "bg_start") {
-      if (normalizedToolName === "bg_start" && toolMatch?.state === "deny") {
+      const toolState =
+        toolMatch?.state ??
+        resolveLayeredDefaultPermission(layers, "tools")?.state ??
+        DEFAULT_POLICY.tools;
+      if (normalizedToolName === "bg_start" && toolState === "deny") {
         return {
           toolName,
           state: "deny",
-          matchedPattern: toolMatch.matchedPattern,
-          source: "tool",
+          matchedPattern: toolMatch?.matchedPattern,
+          source: toolMatch ? "tool" : "default",
         };
       }
       const record = toRecord(input);
@@ -1232,14 +1236,14 @@ export class PermissionManager {
       );
       if (
         normalizedToolName === "bg_start" &&
-        toolMatch?.state === "ask" &&
+        toolState === "ask" &&
         evaluation.state === "allow"
       ) {
         return {
-          toolName,
+          ...evaluation,
           state: "ask",
-          matchedPattern: toolMatch.matchedPattern,
-          source: "tool",
+          matchedPattern: toolMatch?.matchedPattern,
+          source: toolMatch ? "tool" : "default",
         };
       }
       return evaluation;

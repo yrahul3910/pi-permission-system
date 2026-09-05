@@ -4044,4 +4044,102 @@ runTest("explicit background tool denies and asks are retained", () => {
   }
 });
 
+runTest(
+  "background commands honor default tool policy without changing foreground bash policy",
+  () => {
+    for (const state of ["allow", "ask", "deny"] as const) {
+      const { manager, cleanup } = createManager({
+        defaultPolicy: { tools: state },
+      });
+      try {
+        assert.equal(
+          manager.checkPermission("bg_start", { command: "pwd" }).state,
+          state,
+        );
+        assert.equal(
+          manager.checkPermission("bg_start", { command: "cat .env" }).state,
+          "deny",
+        );
+        assert.equal(
+          manager.checkPermission("bash", { command: "pwd" }).state,
+          "allow",
+        );
+      } finally {
+        cleanup();
+      }
+    }
+    const { manager, cleanup } = createManager({
+      tools: { "bg_*": "allow" },
+      defaultPolicy: { tools: "deny" },
+    });
+    try {
+      assert.equal(
+        manager.checkPermission("bg_start", { command: "pwd" }).state,
+        "allow",
+      );
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+await runAsyncTest(
+  "background tool-level asks show a command prompt and require approval",
+  async () => {
+    for (const tools of [{}, { bg_start: "ask" }] as const) {
+      const harness = createToolCallHarness({ tools }, ["bg_start"]);
+      const event = {
+        toolName: "bg_start",
+        toolCallId: "tool-ask",
+        input: { command: "pwd", title: "test" },
+      };
+      try {
+        assert.equal((await runToolCall(harness, event)).block, true);
+        assert.notEqual(
+          (await runToolCall(harness, event, { hasUI: true })).block,
+          true,
+        );
+        assert.ok(
+          harness.prompts.some(
+            (prompt) =>
+              prompt.includes("requested bg_start command 'pwd'") &&
+              prompt.includes(harness.cwd),
+          ),
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+);
+
+await runAsyncTest(
+  "background commands require a nonempty session directory even with a supplied cwd",
+  async () => {
+    const harness = createToolCallHarness({ tools: { bg_start: "allow" } }, [
+      "bg_start",
+    ]);
+    try {
+      for (const cwd of ["", "   "]) {
+        harness.cwd = cwd;
+        const result = await runToolCall(harness, {
+          toolName: "bg_start",
+          toolCallId: "missing-cwd",
+          input: {
+            command: "pwd",
+            cwd: "/spoofed",
+            working_dir: ".",
+            title: "test",
+          },
+        });
+        assert.equal(result.block, true);
+        assert.match(String(result.reason), /session.*directory/i);
+        assert.equal(harness.prompts.length, 0);
+      }
+    } finally {
+      await harness.cleanup();
+    }
+  },
+);
+
 console.log("All permission system tests passed.");
