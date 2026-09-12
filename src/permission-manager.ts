@@ -19,6 +19,7 @@ import {
   type BashRuleSets,
   type BashSyntaxPolicy,
 } from "./bash-evaluator.js";
+import { getPermissionSystemConfigPath } from "./extension-config.js";
 import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.js";
 import {
   compileRegistry,
@@ -47,7 +48,6 @@ function defaultPolicyAgentDir(): string {
   return override ? resolve(override) : getAgentDir();
 }
 
-function defaultGlobalConfigPath(): string { return join(defaultPolicyAgentDir(), "pi-permissions.jsonc"); }
 function defaultAgentsDir(): string { return join(defaultPolicyAgentDir(), "agents"); }
 function defaultLegacyGlobalSettingsPath(): string { return join(defaultPolicyAgentDir(), "settings.json"); }
 function defaultGlobalMcpConfigPath(): string { return join(defaultPolicyAgentDir(), "mcp.json"); }
@@ -767,7 +767,7 @@ export class PermissionManager {
       onWarning?: (message: string) => void;
     } = {},
   ) {
-    this.globalConfigPath = options.globalConfigPath || defaultGlobalConfigPath();
+    this.globalConfigPath = options.globalConfigPath || getPermissionSystemConfigPath();
     this.agentsDir = options.agentsDir || defaultAgentsDir();
     this.projectGlobalConfigPath = options.projectGlobalConfigPath || null;
     this.projectAgentsDir = options.projectAgentsDir || null;

@@ -2,13 +2,46 @@
 
 ## Important: read this
 
-This is a fork of the pi-permission-system extension that's available on npm. This version makes a couple of changes:
-* The built-in `read` tool will always ask for approval if .env is in the path, regardless of your config.
-* Piped commands are handled a bit better: if all commands are in the allow-list, the command with pipes is allowed; if any of them are ask, it asks for permission.
+This is a fork of the pi-permission-system extension available on npm.
 
-The changes were mostly vibed using Opus 4.6. In my brief testing, it worked, but ymmv.
+### Fork changes
 
-Below is the rest of the original README.
+The fork adds shell analysis, protected-path checks, and background-command enforcement, alongside permission UI and configuration changes. The dates below distinguish earlier work from the current Unreleased changes; see [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+| Introduced | Differences from upstream |
+|---|---|
+| May 21, 2026 | Initial per-command pipeline checks, later replaced by the July shell parser. A special approval path for file-tool paths ending in `.env`; its policy exceptions are documented below. |
+| June 13–July 10, 2026 | Node.js 24 requirement, completed tsx test migration, artifact-validation fixes, CI, desktop notifications with terminal/tmux focus tracking, and formatting configuration. |
+| July 22, 2026 | Grammar-based shell decomposition, normalized argument-prefix rules, protected paths, an argument-aware safe-command registry, write-redirection checks, configurable shell-syntax policy, and eligible per-command-family session approvals. Runtime YOLO toggles stopped syncing between separate Pi processes. Added working/thinking-time displays and automated code review. |
+| August–September 2026, Unreleased | Revised denial messages, expanded policy documentation, terminal-sized permission dialogs, in-process subagent forwarding, `bg_start` command/directory enforcement, and the session-only `/yolo` command. |
+
+The shell checks evaluate each command and redirection separately and take the most restrictive result. Protected-path denies outrank allow rules and YOLO. A safe-command registry decline can still fall through to an `allow` bash default, and static shell analysis does not sandbox the files a program can access. See [Bash Defaults](#bash-defaults) and [Threat Model](#threat-model).
+
+Current Unreleased changes:
+
+- Removed the extension-local `config.json`. Settings and global permission rules now share `~/.pi/agent/pi-permissions.jsonc`. There is no migration or fallback to the removed file. Missing settings use defaults.
+- Added **Subagent prompt timeout** to `/permission-system`. The default is **600 seconds (10 minutes)**. Set `"forwardedPromptTimeoutSeconds": null` in the global permission file, or choose **off** in the modal, for no limit.
+- Removed the separate hardcoded forwarding deadline. The configured timeout covers the whole request, including time waiting for display. Each request keeps the deadline selected at creation, and the prompt shows its remaining time. No-limit requests wait until answered.
+- Fixed in-process subagents resetting the parent's YOLO state or replacing its runtime API. The parent auto-approves forwarded `ask` requests while YOLO is on. YOLO does not override a `deny` returned by policy evaluation; see the file-tool exceptions below. YOLO toggles remain session-local.
+- Settings saves preserve permission rules, JSONC comments, and symlinks. `PI_PERMISSION_SYSTEM_CONFIG_PATH`, when set, selects the file for both global rules and settings.
+
+For example, add this top-level setting alongside your permission rules to disable the timeout:
+
+```jsonc
+{
+  "forwardedPromptTimeoutSeconds": null
+}
+```
+
+Other optional settings default to `enabled: true`, `debug: false`, `yoloMode: false`, and `desktopNotifications: true`. `yoloMode` in the file sets the startup default; runtime toggles are never saved.
+
+#### File-tool policy exceptions
+
+Tool filtering still determines which tools the agent can see. For calls that reach the runtime hook, the fork has a special `.env` approval path for `read`, `write`, `edit`, `find`, `grep`, and `ls` when their explicit path ends in the case-sensitive suffix `.env`. Both `.env` and `production.env` match. It runs after the external-directory check and before normal tool/path policy evaluation. Approval, including YOLO auto-approval, permits the call without applying those normal rules, so a configured tool/path deny can be bypassed here. `.env.local` and `.ENV` do not match. A directory component named `.env` alone does not trigger the check; `.env/child` does not match, but `.env/child.env` does.
+
+Recognized skill-file reads take a separate skill approval path before external-directory and normal read policy checks. Their outcome comes from the skill policy, approval of the current request (including YOLO auto-approval), or an explicit user `/skill:<name>` request; they do not also apply ordinary `tools.read` or `external_directory` rules. Neither exception branch saves a reusable session approval when `Allow Always` is selected. See [skills](#skills).
+
+The remaining sections document this fork's current behavior.
 
 Permission enforcement extension for the Pi coding agent that provides centralized, deterministic permission gates for tool, bash, MCP, skill, and special operations.
 
@@ -34,7 +67,7 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
   - [Permission States](#permission-states)
   - [Pi Integration Hooks](#pi-integration-hooks)
 - [Configuration](#configuration)
-  - [Extension Config File](#extension-config-file)
+  - [Settings in pi-permissions.jsonc](#settings-in-pi-permissionsjsonc)
   - [Desktop Notifications](#desktop-notifications)
   - [Runtime YOLO Control](#runtime-yolo-control)
   - [Global Policy File](#global-policy-file)
@@ -54,7 +87,7 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
   - [`skills`](#skills)
   - [`special`](#special)
 - [Common Recipes](#common-recipes)
-  - [Read-Only Mode](#read-only-mode)
+  - [Restricting write and edit tools](#restricting-write-and-edit-tools)
   - [Typical Developer Policy](#typical-developer-policy)
   - [Restricted Bash Surface](#restricted-bash-surface)
   - [MCP Discovery Only](#mcp-discovery-only)
@@ -104,8 +137,8 @@ permission:
   tools:
     read: allow
     grep: allow
-  bash:
-    "*": ask
+  defaultPolicy:
+    bash: ask
   mcp:
     "*": ask
 ---
@@ -119,10 +152,10 @@ Your agent instructions go here.
 |---|---|---:|---|
 | Agent markdown files with YAML frontmatter | `~/.pi/agent/agents/<agent-name>.md` | High | Your agent-local `permission:` frontmatter pattern carries over cleanly. |
 | Wildcard precedence | Same last-declared-match-wins behavior | High | Broad rules first, specific overrides later. |
-| `bash` permission rules | `permission.bash` | High | Command-pattern gating ports cleanly. |
+| `bash` permission rules | `permission.bash` | Medium | Convert command glob maps to word-prefix `allow`, `ask`, and `deny` rules. |
 | Per-tool permission rules like `read`, `grep`, `list`, `task`, or arbitrary extension tool names | `permission.tools` | Medium-High | Pi groups registered tool names under `tools`, including built-ins and extension tools. |
 | `external_directory` | `permission.special.external_directory` or `permission.special.external_directory:<path>/*` | Medium-High | Coarse fallback stays supported; add resource-qualified rules for specific outside-worktree directories. |
-| `doom_loop` | `permission.special.doom_loop` | Medium | Same idea, different location. |
+| `doom_loop` | `permission.special.doom_loop` | Reserved | Accepted policy key; this extension does not implement a doom-loop detector. |
 | `skill` permission rules | `permission.skills` | Medium | Same purpose, but Pi uses a dedicated plural `skills` section. |
 | MCP-related access | `permission.mcp` for proxy targets, `permission.tools` for direct registered tools | Medium | This is the biggest Pi-specific difference: proxy MCP targets and direct tool names are intentionally split. |
 | OpenCode-specific permissions like `webfetch`, `websearch`, `question`, `lsp`, `todowrite` | Usually extension-specific Pi tool names under `permission.tools` | Low-Medium | These do not have universal built-in one-to-one Pi names; map them to the actual registered tools available in your Pi setup. |
@@ -140,7 +173,7 @@ In OpenCode, many permission names live in one broad permission namespace. In Pi
 
 | If your OpenCode agent has... | In Pi, do this |
 |---|---|
-| `permission.bash` rules | Move them into `permission.bash` |
+| `permission.bash` rules | Convert glob maps to word-prefix rules in `permission.bash`; use `permission.defaultPolicy.bash` for the fallback |
 | `permission.external_directory` | Move it to `permission.special.external_directory` |
 | `permission.doom_loop` | Move it to `permission.special.doom_loop` |
 | `permission.skill` rules | Move them to `permission.skills` |
@@ -154,7 +187,8 @@ If you are coming from OpenCode, you usually do **not** need to rewrite your who
 1. Keep the agent markdown/frontmatter structure.
 2. Move OpenCode-style tool permissions into Pi's `tools` section.
 3. Move `external_directory` and `doom_loop` into `special`.
-4. Split MCP proxy target rules into `mcp` and direct registered tool rules into `tools`.
+4. Convert bash glob maps to word-prefix `allow`, `ask`, and `deny` rules. JSONC accepts arrays; agent frontmatter accepts comma-separated strings.
+5. Split MCP proxy target rules into `mcp` and direct registered tool rules into `tools`.
 
 ## Features
 
@@ -162,9 +196,9 @@ If you are coming from OpenCode, you usually do **not** need to rewrite your who
 - **System Prompt Sanitization** — Removes denied tool entries from the `Available tools:` system prompt section so the agent only sees tools it can actually call
 - **Runtime Enforcement** — Blocks/asks/allows at tool call time with UI confirmation dialogs and readable approval summaries
 - **Bash Command Decomposition** — Every bash invocation is parsed with the canonical bash grammar (mvdan-sh) and decomposed into the commands it actually executes (including inside `$(...)`, backticks, `bash -c` strings, and wrappers like `timeout`/`env`/`xargs`) and the files it reads and writes; each piece is evaluated on its own, so pipes and `&&` chains of allowed commands never prompt
-- **Safe-Command Registry** — Read-only commands (`rg`, `cat`, `git log`, ...) are allowed out of the box by a declarative, overridable registry, so most agent traffic needs zero config; unsafe forms (`fd -x`, `sed -i`, `rg --pre`) fall out of the vouch and prompt
-- **Protected Paths** — Secrets like `.env`, `.ssh/`, and `id_rsa*` are denied to every command by default — including via input redirection and `git show HEAD:.env` — outranking every allow rule
-- **Session Family Approvals** — Approval prompts list exactly the blocking pieces and offer `Allow for this session: <families>`; approved families silence matching pieces of later compounds while everything else still gets checked
+- **Safe-Command Registry** — Read-only commands (`rg`, `cat`, `git log`, ...) are allowed out of the box by a declarative, overridable registry, so most agent traffic needs zero config; unsafe forms (`fd -x`, `sed -i`, `rg --pre`) lose registry approval and use the prefix-rule checks or effective bash default
+- **Protected Paths** — Secrets like `.env`, `.ssh/`, and `id_rsa*` are denied to every bash command by default — including via input redirection and `git show HEAD:.env` — outranking every allow rule
+- **Session Family Approvals** — Local bash approval prompts summarize up to four blocking pieces plus an omitted count and offer `Allow for this session: <families>` when eligible; approved families silence matching pieces of later compounds while everything else still gets checked
 - **MCP Access Control** — Server and tool-level permissions for MCP operations
 - **Skill Protection** — Controls which skills can be loaded or read from disk, including multi-block prompt sanitization and path-inferred reads under Pi skill directories
 - **Per-Agent Overrides** — Agent-specific permission policies via YAML frontmatter
@@ -172,9 +206,9 @@ If you are coming from OpenCode, you usually do **not** need to rewrite your who
 - **Runtime YOLO Control** — Lets users toggle yolo mode from the settings modal and lets other extensions toggle it through the runtime API
 - **Turn Runtime Indicator** — Adds active agent-run runtime to Pi's `Working...` spinner through tool calls, excluding time spent waiting for permission decisions
 - **Thought Duration Annotation** — Adds a gray `Thought for <time>` line immediately before the final assistant response
-- **File-Based Debug Logging** — Writes verbose diagnostics and permission request/denial review entries to one debug file when enabled in `config.json`, including the responsible agent and raw tool-call input
+- **File-Based Debug Logging** — Writes verbose diagnostics and permission request/denial review entries to one debug file when enabled in `pi-permissions.jsonc`, including the responsible agent and raw tool-call input
 - **JSON Schema Validation** — Full schema for editor autocomplete and config validation
-- **External Directory Guard** — Enforces `special.external_directory` for path-bearing file tools that target paths outside the active working directory
+- **External Directory Guard** — Enforces `special.external_directory` for ordinary path-bearing file calls outside the working directory; recognized skill reads use their separate skill approval path
 
 ## Installation
 
@@ -195,7 +229,7 @@ Place this folder in one of the following locations:
 
 Pi auto-discovers extensions in these paths.
 
-> **Tip:** All `~/.pi/agent` paths shown in this document are defaults. If the `PI_CODING_AGENT_DIR` environment variable is set, pi uses that directory instead. The extension automatically follows pi's `getAgentDir()` helper for extension installation, session directories, and extension-local config paths. If you need policy lookup to come from a different global agent root, set `PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR`.
+> **Tip:** All `~/.pi/agent` paths shown in this document are defaults. If the `PI_CODING_AGENT_DIR` environment variable is set, pi uses that directory instead. The extension follows pi's `getAgentDir()` helper for the global permission file and session directories. Log paths are based on the installed extension's source directory. If you need policy lookup to come from a different global agent root, set `PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR`.
 
 ## Usage
 
@@ -231,9 +265,9 @@ All permissions use one of three states:
 | `deny`  | Blocks the action with an error message     |
 | `ask`   | Prompts the user for confirmation via UI    |
 
-When an `ask` permission prompts, the confirmation UI offers `Allow Once`, `Allow Always`, `Reject`, and `Reject with Reason`. `Allow Once` approves only the current request. `Allow Always` records an explicit matching approval for the current session only (in-memory, not persisted to disk), while plain `Reject` and `Reject with Reason` deny only the current request and do not silently become future defaults. YOLO/auto-response approvals also do not create saved approval rules; after YOLO mode is disabled, matching `ask` requests require approval again. A configured `deny` remains a hard boundary and is not relaxed by prior one-shot, auto-response, or saved approvals.
+When an `ask` permission prompts, the confirmation UI offers `Allow Once`, `Allow Always`, `Reject`, and `Reject with Reason`. `Allow Once` approves only the current request. For ordinary tool and external-directory prompts, `Allow Always` records an explicit matching approval for the current session only (in-memory, not persisted to disk), while plain `Reject` and `Reject with Reason` deny only the current request and do not silently become future defaults. YOLO/auto-response approvals also do not create saved approval rules; after YOLO mode is disabled, matching `ask` requests require approval again. When normal policy evaluation returns `deny`, saved approvals and YOLO do not relax it. The [file-tool exceptions](#file-tool-policy-exceptions) can skip normal tool/path evaluation.
 
-For a bash prompt, the dialog additionally offers `Allow for this session: <families>` when every blocking piece is an ask with a clear plain-word command (for example `Allow for this session: wc` when approving `git log | wc -l`, or `Allow for this session: git push`). A family is the command word, extended to `<cmd> <subcommand>` for subcommand-structured tools (`git`, `gh`, `cargo`, `npm`, `uv`, ...). Choosing it records session-only allow prefixes that act exactly like config allow rules — which is safe by construction, because every piece of every later command is still evaluated individually: `wc $(evil)`, `wc > file`, and protected-path reads still prompt or deny. The families are always re-derived from the real evaluation of the command text before saving, never from a UI label or forwarded payload, and the option is omitted whenever any blocking piece is a deny, a write, a syntax finding, an opaque executable (`sudo`, `eval`, shells), or has no literal plain-word command.
+For a local bash prompt, the dialog additionally offers `Allow for this session: <families>` when all blocking pieces are eligible ordinary commands, such as `git push origin main` under the default ask policy. A family is the command word, extended to `<cmd> <subcommand>` for subcommand-structured tools (`git`, `gh`, `cargo`, `npm`, `uv`, ...). Choosing it records session-only allow prefixes; later invocations still evaluate every piece, including substitutions, write targets, and protected paths. Families are re-derived from the command evaluation before saving. A matching explicit `bash.ask` rule does not offer a family approval. Neither do denied pieces, writes, syntax findings, opaque executables (`sudo`, `eval`, shells), or commands without a literal executable word. Forwarded dialogs do not currently offer family approval options.
 
 ### Pi Integration Hooks
 
@@ -254,7 +288,7 @@ The extension integrates via Pi's lifecycle hooks:
 - When a subagent hits an `ask` permission without direct UI access, the request can be forwarded to the main interactive session for confirmation
 - Generic extension-tool approval prompts include a bounded input preview; built-in file tools use concise human-readable summaries instead of raw multiline JSON
 - Debug review entries include the responsible agent, raw prompt, raw tool-call input, command, target, and decision metadata for auditing.
-- Path-bearing file tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) evaluate `special.external_directory` before their normal tool permission when an explicit path points outside `ctx.cwd`
+- Ordinary path-bearing file calls (`read`, `write`, `edit`, `find`, `grep`, `ls`) evaluate `special.external_directory` before normal tool permission when an explicit path points outside `ctx.cwd`; recognized skill reads take the separate skill approval path first
 - `read` calls under global and project Pi skill directories are checked against `skills` policy even when the skill entry is inferred from the path rather than an active prompt block.
 - Structured edit payloads are summarized by operation and line count in prompts so permission decisions do not require raw multiline JSON.
 - The runtime spans tool-call turns and freezes while any local or forwarded permission decision is awaiting a response, so approval wait time is not counted.
@@ -262,20 +296,21 @@ The extension integrates via Pi's lifecycle hooks:
 
 ## Configuration
 
-### Extension Config File
+### Settings in pi-permissions.jsonc
 
-**Location:** global Pi extension config (default: `~/.pi/agent/extensions/pi-permission-system/config.json`, respects `PI_CODING_AGENT_DIR`)
+**Location:** `~/.pi/agent/pi-permissions.jsonc`, the same file that contains permission rules. Respects `PI_CODING_AGENT_DIR` and the router policy directory.
 
-Set `PI_PERMISSION_SYSTEM_CONFIG_PATH` to point this extension at a specific config file when the default global path is not appropriate.
+Set `PI_PERMISSION_SYSTEM_CONFIG_PATH` to override the path for both settings and global permission rules.
 
-The extension creates this file automatically when it is missing. It controls extension-local debug logging behavior and yolo mode defaults:
+All settings are optional. Missing keys use the defaults below; permission rules default to `ask`. The extension creates this file when it is missing. These fields belong at the top level alongside `tools`, `bash`, and `defaultPolicy`:
 
 ```json
 {
   "enabled": true,
   "debug": false,
   "yoloMode": false,
-  "desktopNotifications": true
+  "desktopNotifications": true,
+  "forwardedPromptTimeoutSeconds": 600
 }
 ```
 
@@ -285,6 +320,9 @@ The extension creates this file automatically when it is missing. It controls ex
 | `debug` | `false` | Enables verbose diagnostics and permission review entries in `logs/pi-permission-system-debug.jsonl` |
 | `yoloMode` | `false` | Startup default for yolo mode in new sessions. Runtime toggles (settings modal or runtime API) are session-scoped: they are never written back to this file and never propagate to other running sessions |
 | `desktopNotifications` | `true` | Sends a native desktop notification when a permission prompt is waiting and this terminal tab is not focused |
+| `forwardedPromptTimeoutSeconds` | `600` | Countdown in seconds before an unanswered subagent prompt is denied. A positive number enables it; `null` disables it. Change it in the settings modal under **Subagent prompt timeout**. |
+
+The modal saves to this same file and preserves permission rules and JSONC comments. There is no separate extension config or migration. Extension settings are read from the global file; project policy files continue to control project permission rules.
 
 Debug output writes only under the extension directory by default. Set `PI_PERMISSION_SYSTEM_LOGS_DIR` to redirect the debug file to a specific directory. No debug output is printed to the terminal.
 
@@ -363,7 +401,7 @@ pi.registerShortcut("f8", {
 });
 ```
 
-The runtime API exposes `getYoloMode()`, `setYoloMode(enabled, options?)`, and `toggleYoloMode(options?)`. Yolo mode is session-scoped: runtime updates apply to the current session's in-memory config only, are never written to `config.json`, and therefore never propagate to other sessions. Each new session starts from the `yoloMode` value in `config.json`, so edit the file by hand if you want yolo mode on by default.
+The runtime API exposes `getYoloMode()`, `setYoloMode(enabled, options?)`, and `toggleYoloMode(options?)`. The shared global API controls its registered owner, ordinarily the interactive parent; it is not a per-caller API for arbitrary in-process children. Runtime updates change that owner's in-memory YOLO state and are never saved. Each newly loaded extension instance takes its startup YOLO value from `pi-permissions.jsonc`; lifecycle refreshes preserve its current toggle.
 
 ### Global Policy File
 
@@ -381,7 +419,7 @@ The policy file is a JSON object with these sections:
 | `skills`        | Skill name pattern permissions                      |
 | `special`       | Reserved permission checks such as external directory access |
 
-> **Note:** JSONC comments and trailing commas are supported. If parsing still fails, the extension falls back to `ask` for all categories and shows a warning in the TUI when available.
+> **Note:** JSONC comments and trailing commas are supported. If parsing still fails, the extension falls back to the default global policy and shows a warning in the TUI when available. Category defaults become `ask`, but the bash registry can still allow commands and other policy layers still apply.
 
 ### Global Per-Agent Overrides
 
@@ -490,9 +528,9 @@ Path-bearing built-ins (`read`, `write`, `edit`, `find`, `grep`, `ls`) can also 
 }
 ```
 
-Action-scoped resource rules still respect normal permission guardrails: matching uses the same wildcard/last-match behavior as other tool rules, and outside-worktree paths must also satisfy the `special.external_directory` check.
+Action-scoped resource rules use the same wildcard/last-match behavior as other tool rules. Ordinary outside-worktree file calls must also satisfy `special.external_directory`. The [file-tool exceptions](#file-tool-policy-exceptions) for recognized skills and `.env` suffixes run before normal tool/path evaluation.
 
-> **Note:** Setting `tools.bash` affects the *default* for bash commands that nothing else matches; `bash` rules, the safe-command registry, and protected paths all take precedence over it.
+> **Note:** At command-evaluation time, `tools.bash` supplies a fallback after prefix rules, the registry, and protected paths. Tool exposure is checked earlier: if the matching `tools.bash` rule or effective `defaultPolicy.bash` is `deny`, Pi removes `bash` from the active tools. Command-prefix and registry allowances do not restore that tool.
 >
 > **Note:** Setting `tools.mcp` controls coarse access to a registered `mcp` proxy tool when one is available. Specific `mcp` rules still override it when a proxy target pattern matches. Direct MCP tools registered by extensions are regular registered tools and should be controlled with `tools` patterns such as `context7_*` or `github_*`.
 >
@@ -505,15 +543,17 @@ Bash permissions were redesigned around one idea: **a command is judged by what 
 - the simple commands it executes — on either side of pipes and `&&`/`||`/`;` chains, inside `$(...)`/backtick/process substitutions, in loop and conditional bodies, inside `bash -c "..."` strings, and behind unwrapped wrappers (`env`, `timeout`, `nice`, `xargs`, `stdbuf`, `nohup`, `setsid`, `time`, `command`, and leading `VAR=x` assignments);
 - the files it reads and writes through redirections (heredoc bodies are data, `2>&1`-style fd duplications and `/dev/null` are non-effects).
 
-Each executed command is then resolved **individually**, in strict order:
+Each executed command is resolved individually:
 
-1. a `deny` prefix rule matches → **deny**
-2. any argv token or redirection target matches a protected path → **deny**
-3. an `ask` prefix rule matches → **ask**
-4. an `allow` prefix rule / session approval matches, or the built-in safe-command registry vouches → **allow**
-5. otherwise → `defaultPolicy.bash` (`ask` out of the box)
+1. A protected argv token or literal expansion fragment causes `deny`.
+2. A matching `deny` prefix rule causes `deny`.
+3. An opaque executable requires `ask`.
+4. A matching `ask` prefix rule causes `ask`.
+5. A vouched safe-command registry invocation is allowed.
+6. A matching config or session allow prefix is checked against the unsafe-argument guard described below.
+7. Otherwise, the matching `tools.bash` rule supplies the fallback, followed by `defaultPolicy.bash` (`ask` out of the box).
 
-Write redirection targets additionally need write permission (see below). The overall answer is the most restrictive across all pieces — and **when every piece resolves to allow, there is no prompt at all**: `rg foo | wc -l`, `git log --oneline | head`, `cmd >/dev/null 2>&1`, and `FOO=1 timeout 5 cargo test` run silently under an empty config.
+Write redirection targets additionally need write permission (see below). The overall answer is the most restrictive across all pieces — and **when every piece resolves to allow, there is no prompt at all**: `rg foo | wc -l` and `git log --oneline | head` run silently under an empty config. An unknown `cmd` in `cmd >/dev/null 2>&1` still needs approval, as does `cargo test` in `FOO=1 timeout 5 cargo test` unless an allow rule covers it.
 
 Rules are **word-prefix lists**, not globs:
 
@@ -545,7 +585,7 @@ Most read-only commands need no config at all. A declarative registry (`src/safe
 - an argument matches the row's `unsafeArgs` (`fd -x`, `sed -i`, `sort -o`, `find -exec`, `rg --pre`, ...), or an `unsafePatterns` regex (sed `e`-flag scripts);
 - for subcommand-structured tools, the leading non-flag words don't start with a listed `safeSubcommands` word sequence (`git log` is vouched; `git push` is not).
 
-An unvouched invocation is evaluated like any unknown command, with one guard: **an allow rule only covers an unsafe-argument invocation if the rule names the argument** — `"sed -i"` opts into in-place edits, plain `"sed"` does not. Unsafe-pattern and expansion-carrying invocations of restricted rows cannot be rule-covered at all; they always prompt.
+An unvouched invocation is evaluated like any unknown command, with one guard: **an allow rule only covers an unsafe-argument invocation if the rule names the argument** — `"sed -i"` opts into in-place edits, plain `"sed"` does not. Unsafe-pattern and expansion-carrying invocations of restricted rows cannot be covered by allow rules. Without a matching allow rule, they use the effective bash default (the matching `tools.bash` rule, then `defaultPolicy.bash`). It defaults to `ask`, but an `allow` fallback permits them unless another check blocks the command.
 
 #### Configuring `registryOverrides`
 
@@ -597,7 +637,7 @@ Notes:
 
 #### Write redirections
 
-`>`-style redirection targets need write permission, resolved as: explicit `write:<path>` rules in `tools` → default temp-dir allowance (`/tmp`, `/private/tmp`, `$TMPDIR`, `/var/folders`) → the bare `write` tool state → ask. So out of the box `echo x > /tmp/scratch` runs silently while `echo x > src/index.ts` prompts, and `"write:./generated/*": "allow"` opens specific project paths.
+`>`-style redirection targets need write permission, resolved as: explicit `write:<path>` rules in `tools` → default temp-dir allowance (`/tmp`, `/private/tmp`, `$TMPDIR`, `/var/folders`) → the bare `write` tool state → ask. So out of the box `echo x > /tmp/scratch` runs silently while `echo x > src/index.ts` prompts, and `"write:/home/alice/project/generated/*": "allow"` opens that directory. Resource patterns must use normalized absolute paths; `write:./generated/*` does not match an absolute target.
 
 ### `protectedPaths`
 
@@ -609,19 +649,21 @@ Certain paths are secrets and are **denied to every bash command by default**, o
 }
 ```
 
-Protected-path checks also see the **literal fragments** of arguments and redirect targets that contain expansions, so `cat "$HOME/.env"` and `tr x y < "$DIR/.env"` are denied even though the full path cannot be resolved statically. The residual limitation: a variable whose *entire value* names a protected file (`FILE=.env; cat $FILE`) cannot be caught without runtime dataflow — protected paths are a tripwire against accidental and casual access, not a sandbox. (Restricted registry rows already refuse to vouch for any invocation carrying expansions, and unknown commands with expansions still prompt.)
+Protected-path checks also see the **literal fragments** of arguments and redirect targets that contain expansions, so `cat "$HOME/.env"` and `tr x y < "$DIR/.env"` are denied even though the full path cannot be resolved statically. The residual limitation: a variable whose *entire value* names a protected file (`FILE=.env; cat $FILE`) cannot be caught without runtime dataflow — protected paths are a tripwire against accidental and casual access, not a sandbox. (Restricted registry rows already refuse to vouch for any invocation carrying expansions, and unknown commands with expansions use matching prefix rules, then the effective bash default, normally `ask`.)
 
 > **Migrating from the pre-redesign format:** glob maps like `"rg *": "allow"` and the `bashSafety` section are no longer read; loading a config that contains them logs a one-time warning with suggested prefix-rule replacements. Most old allow entries are simply covered by the registry and can be dropped; `.env`-style deny globs are covered by protected paths.
 
 ### Bash Defaults
 
-Everything below ships built in and is what an **empty config** gives you. All of it is overridable ([`registryOverrides`](#configuring-registryoverrides), `protectedPaths`, `bash.syntax`, `write:<path>` rules).
+Everything below ships built in and is what an **empty config** gives you. Registry rows, syntax policy, and write permissions are configurable through [`registryOverrides`](#configuring-registryoverrides), `bash.syntax`, and `write:<path>` rules. `protectedPaths` adds patterns to the built-in protected list; it cannot remove built-ins.
 
-**Registry — always vouched read-only (no restrictions):**
+**Registry rows without command-specific restrictions:**
+
+A global 2,000-character argument-length cap still applies; oversized arguments void registry approval.
 
 `basename`, `cat`, `cksum`, `cmp`, `column`, `comm`, `cut`, `df`, `diff`, `dirname`, `du`, `echo`, `expand`, `expr`, `false`, `file`, `fold`, `grep`, `head`, `hexdump`, `hostname`, `id`, `jq`, `ls`, `md5`, `md5sum`, `nl`, `od`, `printf`, `ps`, `pwd`, `readlink`, `realpath`, `seq`, `sha1sum`, `sha256sum`, `shasum`, `sleep`, `stat`, `strings`, `sw_vers`, `tail`, `test`, `tr`, `tree`, `true`, `type`, `uname`, `unexpand`, `uniq`, `uptime`, `wc`, `which`, `whoami`, `:`, `[`, `cd`, `export`, `hash`, `local`, `read`, `set`, `shift`, `unset`
 
-**Registry — vouched with restrictions** (an unsafe argument or unlisted subcommand voids the vouch and the command prompts unless a rule explicitly names it):
+**Registry — vouched with restrictions** (an unsafe argument or unlisted subcommand voids the vouch; prefix-rule checks or the effective bash default then apply):
 
 | Command | Restrictions |
 |---------|--------------|
@@ -640,7 +682,7 @@ Everything below ships built in and is what an **empty config** gives you. All o
 
 **Subcommand-structured families (session approvals use `<cmd> <subcommand>`):** `bun`, `cargo`, `docker`, `gh`, `git`, `go`, `jj`, `kubectl`, `npm`, `npx`, `pip`, `pnpm`, `uv`, `uvx`, `yarn`.
 
-**Protected paths (denied to every command):**
+**Protected paths (denied to every bash command):**
 
 `.env`, `.env.*`, `*.env`, `.envrc`, `.netrc`, `.npmrc`, `.pypirc`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`, `*.pem`, `*.p12`, `*.pfx`, `*.key`, `.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`, `*_history`, `.git-credentials`, `credentials`, `credentials.json`
 
@@ -723,7 +765,7 @@ Reserved permission checks:
 
 | Key                  | Description                              |
 |----------------------|------------------------------------------|
-| `doom_loop`          | Controls doom loop detection behavior    |
+| `doom_loop`          | Reserved policy key; this extension does not implement a doom-loop detector |
 | `external_directory` | Coarse fallback for ask/allow/deny decisions on path-bearing built-in tools (`read`, `write`, `edit`, `find`, `grep`, `ls`) when they target paths outside the active working directory |
 | `external_directory:<path>/*` | Resource-qualified external-directory rule for a specific normalized outside-worktree directory |
 
@@ -737,13 +779,16 @@ Reserved permission checks:
 }
 ```
 
-`external_directory` is evaluated before the normal tool permission check. For example, `tools.read: "allow"` can permit ordinary reads while `special.external_directory: "ask"` still requires confirmation before reading `../outside.txt` or an absolute path outside `ctx.cwd`. Add `external_directory:<normalized-absolute-directory>/*` when a known outside directory should be allowed or denied without changing the coarse fallback. Optional-path search tools (`find`, `grep`, `ls`) skip this check when no `path` is provided because they default to the active working directory.
+For ordinary file calls, `external_directory` is evaluated before the normal tool permission check. Recognized skill reads return from their skill approval path before either check. For example, `tools.read: "allow"` can permit ordinary reads while `special.external_directory: "ask"` still requires confirmation before reading `../outside.txt` or an absolute path outside `ctx.cwd`. Add `external_directory:<normalized-absolute-directory>/*` when a known outside directory should be allowed or denied without changing the coarse fallback. Optional-path search tools (`find`, `grep`, `ls`) skip this check when no `path` is provided because they default to the active working directory.
 
 ---
 
 ## Common Recipes
 
-### Read-Only Mode
+### Restricting write and edit tools
+
+
+This recipe restricts ordinary file-tool writes and edits. It is not strict read-only enforcement: the bash registry remains active, default temporary-directory redirection allowances precede a bare `write` deny, and the file-tool exceptions described above still apply.
 
 ```jsonc
 {
@@ -777,7 +822,7 @@ With this policy `rg foo | wc -l`, `git log --oneline | head`, `sed -n '1p' f 2>
 
 ### Restricted Bash Surface
 
-Deny-by-default with a hand-picked surface — disable the registry rows you don't want and force prompts elsewhere:
+This illustrates a deny fallback in the command evaluator with explicit asks for `rg` and `cat`. In normal Pi usage, the same `defaultPolicy.bash: "deny"` also removes `bash` from the active tool list before command evaluation:
 
 ```jsonc
 {
@@ -789,7 +834,7 @@ Deny-by-default with a hand-picked surface — disable the registry rows you don
 }
 ```
 
-> Note: with `defaultPolicy.bash: "deny"`, registry-vouched commands still allow; add `ask`/`deny` rules (or [`registryOverrides`](#configuring-registryoverrides) with `null` rows) to tighten specific families.
+> Note: if a command reaches the evaluator through another integration, registry-vouched commands can still allow despite that fallback. Use `ask`/`deny` prefixes or [`registryOverrides`](#configuring-registryoverrides) with `null` rows to restrict specific families. A command allow rule alone does not make a hidden `bash` tool available.
 
 ### MCP Discovery Only
 
@@ -829,7 +874,7 @@ permission:
 
 When a tool permission resolves to `ask`, the prompt is designed to be readable enough for an informed approval decision:
 
-- `bash` prompts show the command plus a breakdown of exactly the blocking pieces — which subcommand has no rule, which file a redirection writes, which path is protected — instead of category jargon.
+- `bash` prompts show the command and summarize up to four blocking pieces. Long command displays show their first 60 characters plus an ellipsis, with reasons appended separately. The summary reports the count of omitted pieces.
 - `mcp` prompts show the derived MCP target and matched rule when available.
 - Built-in file tools show concise summaries, such as the target path and edit/write line counts, instead of raw multiline JSON.
 - Unknown or third-party extension tools show a bounded single-line JSON preview of the input so users are not asked to approve a blind tool name.
@@ -846,13 +891,17 @@ When a delegated or routed subagent runs without direct UI access, `ask` permiss
 
 This keeps `ask` policies usable even when the original permission check happens inside a non-UI execution context.
 
+Local and forwarded prompts share a queue for each UI context. A selector and its optional rejection-reason input finish before the next dialog opens. Finite requests can expire while queued; late responses and responses to withdrawn requests are discarded.
+
+The timeout covers the entire forwarded request, including time waiting for the parent to display it. With the timeout off (`"forwardedPromptTimeoutSeconds": null`), the request waits until answered. A request keeps the deadline selected when it was created; setting changes apply to new requests. YOLO in the receiving parent auto-approves forwarded `ask` requests without showing a countdown. YOLO does not override a `deny` returned by policy evaluation; the [file-tool exceptions](#file-tool-policy-exceptions) can skip normal tool/path evaluation. Each in-process session owns its YOLO state, so starting a child cannot reset the parent.
+
 ### Logging
 
 When the extension prompts, denies, or forwards permission requests, it can append structured JSONL entries under:
 
 ```text
-Default global logs directory: ~/.pi/agent/extensions/pi-permission-system/logs/
-Actual global logs directory: $PI_CODING_AGENT_DIR/extensions/pi-permission-system/logs when PI_CODING_AGENT_DIR is set
+Default logs directory: <installed extension directory>/logs/
+Typical manual global install: ~/.pi/agent/extensions/pi-permission-system/logs/
 Override logs directory: $PI_PERMISSION_SYSTEM_LOGS_DIR when set
 ```
 
@@ -870,7 +919,7 @@ src/
 ├── shell-analyzer.ts            → mvdan-sh AST walk: executed commands, file effects, denied/unanalyzable syntax
 ├── common.ts                    → Shared utilities (YAML parsing, type guards, etc.)
 ├── config-modal.ts              → `/permission-system` modal registration and settings UI wiring
-├── extension-config.ts          → Extension-local config loading and default creation
+├── extension-config.ts          → Global user settings loading, defaults, and JSONC-preserving writes
 ├── logging.ts                   → File-only debug logging helpers
 ├── model-option-compatibility.ts → Guards unsupported provider/model options
 ├── permission-dialog.ts         → Interactive permission approval UI helpers
@@ -888,7 +937,8 @@ src/
 └── zellij-modal.ts              → Reusable modal/settings UI components
 tests/
 ├── permission-system.test.ts    → Core permission, layering, forwarding, and policy tests
-├── bash-safety.test.ts          → Bash safety gate and safe-family session approval tests
+├── bash-evaluation-corpus.test.ts → Command evaluation and approval-family tests
+├── shell-analyzer.test.ts       → Shell parsing and extraction tests
 ├── config-modal.test.ts         → Modal command behavior tests
 ├── turn-runtime.test.ts         → Active-agent runtime and permission-pause tests
 └── test-harness.ts              → Shared lightweight test helpers
@@ -905,10 +955,11 @@ The extension uses a modular architecture with shared utilities:
 | Module | Purpose |
 |--------|---------|
 | `common.ts` | Shared utilities: `toRecord()`, `getNonEmptyString()`, `isPermissionState()`, `parseSimpleYamlMap()`, `extractFrontmatter()` |
-| `wildcard-matcher.ts` | Compile-once wildcard patterns with specificity sorting: `compileWildcardPatterns()`, `findCompiledWildcardMatch()` |
+| `wildcard-matcher.ts` | Compile-once wildcard patterns, matched in reverse declaration order: `compileWildcardPatterns()`, `findCompiledWildcardMatch()` |
 | `permission-manager.ts` | Policy resolution with file stamp caching for performance |
-| `bash-filter.ts` | Uses shared wildcard matcher for bash command patterns |
-| `bash-safety.ts` | Quote/escape-aware shell analysis: safety categories, restrictive clamping, safe-family derivation |
+| `shell-analyzer.ts` | Parses shell syntax and extracts executed commands, arguments, and redirections |
+| `bash-evaluator.ts` | Evaluates command prefixes, protected paths, the safe-command registry, and write permissions |
+| `safe-commands.ts` | Defines the safe-command registry and protected-path patterns |
 | `skill-prompt-sanitizer.ts` | Parses all available skill prompt blocks, removes denied skills, and tracks visible skill paths for read protection |
 
 #### Performance Optimizations
@@ -925,23 +976,24 @@ The extension uses a modular architecture with shared utilities:
 - Agent calling tools it shouldn't use (e.g., `write`, dangerous `bash`)
 - Tool switching attempts (calling non-existent tool names)
 - Accidental escalation via skill loading
-- Unapproved path-bearing tool access outside the active working directory when `external_directory` is `ask` or `deny`
+- Unapproved ordinary path-bearing file calls outside the working directory when `external_directory` is `ask` or `deny`; recognized skill reads take a separate approval path
 
 **Limitations:**
+- Recognized skill reads and approved `.env` suffix calls skip normal file-tool policy checks as described under [file-tool exceptions](#file-tool-policy-exceptions).
 - If a dangerous action is possible via an allowed tool, policy must explicitly restrict it
 - This is a permission decision layer, not a sandbox
 
 ### Schema Validation
 
-Validate your config against the included schema:
+Validate the included example against the schema:
 
 ```bash
-npx --yes ajv-cli@5 validate \
+npx --yes ajv-cli@5 validate --spec=draft2020 \
   -s ./schemas/permissions.schema.json \
-  -d ./pi-permissions.valid.json
+  -d ./config/config.example.json
 ```
 
-**Editor tip:** Add `"$schema": "./schemas/permissions.schema.json"` to your config for autocomplete support.
+For your own policy, supply AJV with plain JSON without comments or trailing commas. In a JSONC-aware editor, set `$schema` to the installed extension's `schemas/permissions.schema.json` using an absolute path or a path relative to your policy file.
 
 ---
 
@@ -952,7 +1004,7 @@ npx --yes ajv-cli@5 validate \
 | Config not applied (everything asks) | File not found or parse error | Verify the global Pi policy file (default: `~/.pi/agent/pi-permissions.jsonc`, respects `PI_CODING_AGENT_DIR`); check the TUI warning for the parse location/message |
 | Per-agent override not applied | Frontmatter parsing issue | Ensure `---` delimiters at file top; keep YAML simple; restart session |
 | Tool blocked as unregistered | Unknown tool name | Use a registered `mcp` tool for server tools: `{ "tool": "server:tool" }` |
-| `/skill:<name>` blocked | Deny policy or confirmation unavailable | Check merged `skills` policy (global/project/agent layers). Active agent context is optional in the main session; `ask` still requires UI or forwarded confirmation. |
+| Agent-initiated skill read blocked | Skill deny policy or confirmation unavailable | Check the merged `skills` policy. An ask requires local UI, forwarded approval, or YOLO. Explicit user `/skill:<name>` requests are tracked separately and permit the requested skill. |
 | External file path blocked | `special.external_directory` is `ask` without UI or a matching rule resolves to `deny` | Keep file tools inside the active working directory, set an appropriate coarse fallback, or add a scoped rule such as `external_directory:/home/alice/shared/*`. |
 | Permission prompt is too verbose | Generic extension tool input is large | Built-in file tools are summarized automatically; third-party tools are capped to a bounded one-line JSON preview. |
 
@@ -966,7 +1018,7 @@ Runtime checks require Node.js 24+; the test suite runs through Node.js with tsx
 npm run build              # Run TypeScript type checks
 npm run lint               # Run local static checks
 npm run validate:artifacts # Validate JSON/schema/example artifacts
-npm run test               # Run Bun tests from ./tests
+npm run test               # Run the configured tsx test suites from ./tests
 npm run check              # Run static, artifact, and test checks
 ```
 

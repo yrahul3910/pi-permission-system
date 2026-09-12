@@ -1,13 +1,24 @@
-import type { ExtensionAPI, ExtensionCommandContext, TUI, Theme } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  TUI,
+  Theme,
+} from "@earendil-works/pi-coding-agent";
 import type { SettingItem } from "@earendil-works/pi-tui";
 
-import { createPermissionSystemCommandHandler, PERMISSION_SYSTEM_COMMAND_DESCRIPTION } from "./common.js";
+import {
+  createPermissionSystemCommandHandler,
+  PERMISSION_SYSTEM_COMMAND_DESCRIPTION,
+} from "./common.js";
 import type { PermissionSystemExtensionConfig } from "./extension-config.js";
 import { ZellijModal, ZellijSettingsModal } from "./zellij-modal.js";
 
 interface PermissionSystemConfigController {
   getConfig(): PermissionSystemExtensionConfig;
-  setConfig(next: PermissionSystemExtensionConfig, ctx: ExtensionCommandContext): void;
+  setConfig(
+    next: PermissionSystemExtensionConfig,
+    ctx: ExtensionCommandContext,
+  ): void;
   getConfigPath(): string;
 }
 
@@ -21,32 +32,54 @@ function toOnOff(value: boolean): string {
   return value ? "on" : "off";
 }
 
-function buildSettingItems(config: PermissionSystemExtensionConfig): SettingItem[] {
+/** Build settings with the configured timeout included even when it is not a preset. */
+function buildSettingItems(
+  config: PermissionSystemExtensionConfig,
+): SettingItem[] {
+  const timeoutValue =
+    config.forwardedPromptTimeoutSeconds === null
+      ? "off"
+      : String(config.forwardedPromptTimeoutSeconds);
+  const timeoutValues = [
+    ...new Set(["off", "15", "30", "60", "120", "300", "600", timeoutValue]),
+  ];
   return [
     {
       id: "debug",
       label: "Debug logging",
-      description: "Write diagnostics and permission review entries to the extension debug file",
+      description:
+        "Write diagnostics and permission review entries to the extension debug file",
       currentValue: toOnOff(config.debug),
       values: ON_OFF,
     },
     {
       id: "yoloMode",
       label: "YOLO mode",
-      description: "Auto-approve ask-state permission checks, including subagent approval forwarding (this session only; never synced to other sessions)",
+      description:
+        "Auto-approve ask-state permission checks, including subagent approval forwarding (this session only; never synced to other sessions)",
       currentValue: toOnOff(config.yoloMode),
       values: ON_OFF,
     },
     {
       id: "desktopNotifications",
       label: "Desktop notifications",
-      description: "Send a desktop notification when a permission prompt is waiting and this tab is not focused",
+      description:
+        "Send a desktop notification when a permission prompt is waiting and this tab is not focused",
       currentValue: toOnOff(config.desktopNotifications),
       values: ON_OFF,
+    },
+    {
+      id: "forwardedPromptTimeoutSeconds",
+      label: "Subagent prompt timeout",
+      description:
+        "Seconds a forwarded request can wait; off waits indefinitely.",
+      currentValue: timeoutValue,
+      values: timeoutValues,
     },
   ];
 }
 
+/** Apply a value selected from the settings list. */
 function applySetting(
   config: PermissionSystemExtensionConfig,
   id: string,
@@ -59,29 +92,61 @@ function applySetting(
       return { ...config, yoloMode: value === "on" };
     case "desktopNotifications":
       return { ...config, desktopNotifications: value === "on" };
+    case "forwardedPromptTimeoutSeconds":
+      return {
+        ...config,
+        forwardedPromptTimeoutSeconds: value === "off" ? null : Number(value),
+      };
     default:
       return config;
   }
 }
 
-function syncSettingValues(settingsList: SettingValueSyncTarget, config: PermissionSystemExtensionConfig): void {
+/** Reflect saved settings in the open modal. */
+function syncSettingValues(
+  settingsList: SettingValueSyncTarget,
+  config: PermissionSystemExtensionConfig,
+): void {
   settingsList.updateValue("debug", toOnOff(config.debug));
   settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
-  settingsList.updateValue("desktopNotifications", toOnOff(config.desktopNotifications));
+  settingsList.updateValue(
+    "desktopNotifications",
+    toOnOff(config.desktopNotifications),
+  );
+  settingsList.updateValue(
+    "forwardedPromptTimeoutSeconds",
+    config.forwardedPromptTimeoutSeconds === null
+      ? "off"
+      : String(config.forwardedPromptTimeoutSeconds),
+  );
 }
 
-export async function openPermissionSystemSettingsModal(ctx: ExtensionCommandContext, controller: PermissionSystemConfigController): Promise<void> {
-  const overlayOptions = { anchor: "center" as const, width: 82, maxHeight: "85%" as const, margin: 1 };
+export async function openPermissionSystemSettingsModal(
+  ctx: ExtensionCommandContext,
+  controller: PermissionSystemConfigController,
+): Promise<void> {
+  const overlayOptions = {
+    anchor: "center" as const,
+    width: 82,
+    maxHeight: "85%" as const,
+    margin: 1,
+  };
 
   await ctx.ui.custom<void>(
-    (tui: TUI, theme: Theme, _keybindings: unknown, done: (result?: void) => void) => {
+    (
+      tui: TUI,
+      theme: Theme,
+      _keybindings: unknown,
+      done: (result?: void) => void,
+    ) => {
       let current = controller.getConfig();
       let settingsModal: ZellijSettingsModal | null = null;
 
       settingsModal = new ZellijSettingsModal(
         {
           title: "Permission System Settings",
-          description: "Local extension options for debug logging and auto-approval behavior",
+          description:
+            "Local extension options for debug logging and auto-approval behavior",
           settings: buildSettingItems(current),
           onChange: (id: string, newValue: string) => {
             current = applySetting(current, id, newValue);
@@ -132,9 +197,14 @@ export async function openPermissionSystemSettingsModal(ctx: ExtensionCommandCon
   );
 }
 
-export function registerPermissionSystemCommand(pi: ExtensionAPI, controller: PermissionSystemConfigController): void {
+export function registerPermissionSystemCommand(
+  pi: ExtensionAPI,
+  controller: PermissionSystemConfigController,
+): void {
   pi.registerCommand("permission-system", {
     description: PERMISSION_SYSTEM_COMMAND_DESCRIPTION,
-    handler: createPermissionSystemCommandHandler((ctx) => openPermissionSystemSettingsModal(ctx, controller)),
+    handler: createPermissionSystemCommandHandler((ctx) =>
+      openPermissionSystemSettingsModal(ctx, controller),
+    ),
   });
 }

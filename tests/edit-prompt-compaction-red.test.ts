@@ -53,7 +53,7 @@ function createToolCallHarness(): ToolCallHarness {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-issue-28-"));
   const cwd = join(baseDir, "repo");
   const policyDir = join(baseDir, "policy");
-  const extensionConfigPath = join(baseDir, "extension-config.json");
+  const extensionConfigPath = join(baseDir, "pi-permissions.jsonc");
   const logsDir = join(baseDir, "logs");
   const prompts: string[] = [];
   const handlers: Record<string, MockHandler> = {};
@@ -78,7 +78,7 @@ function createToolCallHarness(): ToolCallHarness {
     }, null, 2)}\n`,
     "utf8",
   );
-  writeFileSync(extensionConfigPath, `${JSON.stringify(DEFAULT_EXTENSION_CONFIG, null, 2)}\n`, "utf8");
+  writeFileSync(extensionConfigPath, `${JSON.stringify({ ...DEFAULT_EXTENSION_CONFIG, defaultPolicy: { tools: "ask", bash: "ask", mcp: "ask", skills: "ask", special: "ask" } }, null, 2)}\n`, "utf8");
 
   process.env.PI_CODING_AGENT_DIR = policyDir;
   process.env[POLICY_AGENT_DIR_ENV_KEY] = policyDir;

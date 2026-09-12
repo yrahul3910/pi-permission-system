@@ -11,12 +11,6 @@
     "defaultPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "tools",
-        "bash",
-        "mcp",
-        "skills"
-      ],
       "properties": {
         "tools": {
           "$ref": "#/$defs/permissionState"
@@ -141,19 +135,48 @@
           "$ref": "#/$defs/permissionState"
         }
       }
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable the permission extension. Changes take effect when the extension loads."
+    },
+    "debug": {
+      "type": "boolean",
+      "default": false,
+      "description": "Write permission diagnostics to the debug log."
+    },
+    "yoloMode": {
+      "type": "boolean",
+      "default": false,
+      "description": "Startup YOLO default. Runtime toggles stay within the session; the parent auto-approves forwarded ask requests while enabled."
+    },
+    "desktopNotifications": {
+      "type": "boolean",
+      "default": true,
+      "description": "Send a desktop notification when a prompt is waiting and the terminal is not focused."
+    },
+    "forwardedPromptTimeoutSeconds": {
+      "oneOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "null"
+        },
+        {
+          "const": false
+        }
+      ],
+      "default": 600,
+      "description": "Seconds a forwarded request can wait, including time before it is displayed. Defaults to 600 (10 minutes); use null to wait indefinitely."
     }
   },
-  "required": [
-    "defaultPolicy"
-  ],
   "$defs": {
     "permissionState": {
       "type": "string",
-      "enum": [
-        "allow",
-        "deny",
-        "ask"
-      ]
+      "enum": ["allow", "deny", "ask"]
     },
     "permissionMap": {
       "type": "object",

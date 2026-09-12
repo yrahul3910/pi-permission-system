@@ -90,7 +90,7 @@ function createRuntimeHarness(
   const cwd = options.cwd ?? join(baseDir, "workspace");
   const prompts: string[] = [];
   const handlers: Record<string, MockHandler> = {};
-  const extensionConfigPath = join(baseDir, "extension-config.json");
+  const extensionConfigPath = join(baseDir, "pi-permissions.jsonc");
   const logsDir = join(baseDir, "logs");
   const debugPath = join(logsDir, "pi-permission-system-debug.jsonl");
   const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -99,10 +99,9 @@ function createRuntimeHarness(
 
   mkdirSync(join(baseDir, "agents"), { recursive: true });
   mkdirSync(cwd, { recursive: true });
-  writeFileSync(join(baseDir, "pi-permissions.jsonc"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   writeFileSync(
     extensionConfigPath,
-    `${JSON.stringify(options.extensionConfig ?? DEFAULT_EXTENSION_CONFIG, null, 2)}\n`,
+    `${JSON.stringify({ ...config, ...(options.extensionConfig ?? DEFAULT_EXTENSION_CONFIG) }, null, 2)}\n`,
     "utf8",
   );
 

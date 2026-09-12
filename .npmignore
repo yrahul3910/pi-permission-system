@@ -1,5 +1,5 @@
 node_modules
-config.json
+pi-permissions.jsonc
 *.log
 .git
 .gitignore

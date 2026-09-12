@@ -50,7 +50,7 @@ function createHarness(baseDir = mkdtempSync(join(tmpdir(), "pi-permission-syste
   const originalConfigPath = process.env[CONFIG_PATH_ENV_KEY];
   const originalLogsDir = process.env[LOGS_DIR_ENV_KEY];
   const originalPolicyAgentDir = process.env[PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR_ENV_KEY];
-  const extensionConfigPath = join(baseDir, "extension-config.json");
+  const extensionConfigPath = join(baseDir, "pi-permissions.jsonc");
   const logsDir = join(baseDir, "logs");
 
   mkdirSync(join(baseDir, "agents"), { recursive: true });
@@ -65,7 +65,7 @@ function createHarness(baseDir = mkdtempSync(join(tmpdir(), "pi-permission-syste
     `${JSON.stringify({ defaultPolicy: ASK_BASH_POLICY }, null, 2)}\n`,
     "utf8",
   );
-  writeFileSync(extensionConfigPath, `${JSON.stringify(DEFAULT_EXTENSION_CONFIG, null, 2)}\n`, "utf8");
+  writeFileSync(extensionConfigPath, `${JSON.stringify({ ...DEFAULT_EXTENSION_CONFIG, defaultPolicy: ASK_BASH_POLICY }, null, 2)}\n`, "utf8");
 
   process.env.PI_CODING_AGENT_DIR = baseDir;
   process.env[CONFIG_PATH_ENV_KEY] = extensionConfigPath;
@@ -231,6 +231,7 @@ await runAsyncTest("forwarded permission responses cannot escape the responses d
         id: "../requests/evil",
         responseNonce: "nonce",
         createdAt: Date.now(),
+        expiresAt: null,
         requesterSessionId: "sub-session",
         targetSessionId: sessionId,
         requesterAgentName: "evil-agent",

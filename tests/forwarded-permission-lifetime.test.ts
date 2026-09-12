@@ -20,7 +20,6 @@ import { requestPermissionDecisionFromUi } from "../src/permission-dialog.js";
 import {
   createPermissionForwardingLocation,
   PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY,
-  PERMISSION_FORWARDING_TIMEOUT_MS,
 } from "../src/permission-forwarding.js";
 import { runAsyncTest } from "./test-harness.js";
 
@@ -28,6 +27,7 @@ function unexpectedUiCall(): never {
   throw new Error("Unexpected UI operation");
 }
 
+/** Create isolated request files and a UI whose active decision the test controls. */
 function createForwardingCase() {
   const directory = mkdtempSync(join(tmpdir(), "pi-forwarding-lifetime-"));
   const previousAgentDir = process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
@@ -75,14 +75,14 @@ function createForwardingCase() {
     requestPath,
     responsePath,
     answer: (value: string) => answer(value),
-    writeRequest: (remainingMs: number) =>
+    writeRequest: (remainingMs: number | null) =>
       writeFileSync(
         requestPath,
         JSON.stringify({
           id: "lifetime",
           responseNonce: "lifetime-nonce",
-          createdAt:
-            Date.now() - PERMISSION_FORWARDING_TIMEOUT_MS + remainingMs,
+          createdAt: Date.now(),
+          expiresAt: remainingMs === null ? null : Date.now() + remainingMs,
           requesterSessionId: "child",
           targetSessionId: "parent",
           requesterAgentName: "Explore",
@@ -100,6 +100,48 @@ function createForwardingCase() {
     },
   };
 }
+
+await runAsyncTest(
+  "a no-limit forwarded request remains queued after ten minutes",
+  async () => {
+    const test = createForwardingCase();
+    const originalNow = Date.now;
+    try {
+      setExtensionConfig({
+        ...DEFAULT_EXTENSION_CONFIG,
+        desktopNotifications: false,
+      });
+      test.writeRequest(null);
+      const local = requestPermissionDecisionFromUi(
+        test.context.ui,
+        "Local",
+        "read",
+      );
+      const scan = processForwardedPermissionRequests(test.context, {
+        preserveLocation: true,
+      });
+      const later = originalNow() + 11 * 60 * 1000;
+      Date.now = () => later;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.deepEqual(test.shown, ["Local\nread"]);
+      assert.equal(existsSync(test.requestPath), true);
+      assert.equal(existsSync(test.responsePath), false);
+      test.answer("Allow Once");
+      await local;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(test.shown.length, 2);
+      test.answer("Allow Once");
+      await scan;
+      assert.match(
+        readFileSync(test.responsePath, "utf8"),
+        /"approved":\s*true/,
+      );
+    } finally {
+      Date.now = originalNow;
+      test.cleanup();
+    }
+  },
+);
 
 for (const configuredTimeout of [null, 30]) {
   await runAsyncTest(
@@ -165,7 +207,7 @@ await runAsyncTest(
         ...DEFAULT_EXTENSION_CONFIG,
         desktopNotifications: false,
       });
-      test.writeRequest(PERMISSION_FORWARDING_TIMEOUT_MS);
+      test.writeRequest(60_000);
       test.context.ui.select = async () => {
         rmSync(test.requestPath);
         return "Allow Once";
@@ -219,7 +261,7 @@ for (const configuredTimeout of [null, 30]) {
           desktopNotifications: false,
           forwardedPromptTimeoutSeconds: configuredTimeout,
         });
-        test.writeRequest(PERMISSION_FORWARDING_TIMEOUT_MS);
+        test.writeRequest(60_000);
         test.context.ui.select = async () => "Reject";
         await processForwardedPermissionRequests(test.context, {
           preserveLocation: true,

@@ -11,6 +11,8 @@ import {
   type ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { Type } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import {
   createHash,
   randomBytes,
@@ -64,6 +66,7 @@ import {
 } from "./permission-dialog.js";
 import {
   DEFAULT_EXTENSION_CONFIG,
+  cloneDefaultConfig,
   EXTENSION_ID,
   getPermissionSystemConfigPath,
   loadPermissionSystemConfig,
@@ -84,7 +87,6 @@ import {
   isForwardedPermissionRequestForSession,
   PERMISSION_FORWARDING_POLL_INTERVAL_MS,
   PERMISSION_FORWARDING_WATCH_DEBOUNCE_MS,
-  PERMISSION_FORWARDING_TIMEOUT_MS,
   resolvePermissionForwardingRootDir,
   resolvePermissionForwardingTargetSessionId,
   SUBAGENT_ENV_HINT_KEYS,
@@ -242,7 +244,7 @@ const DUPLICATE_PERMISSION_PROMPT_CACHE_MAX_ENTRIES = 128;
 let extensionConfig: PermissionSystemExtensionConfig = {
   ...DEFAULT_EXTENSION_CONFIG,
 };
-let runtimeApi: PiPermissionSystemRuntimeApi | null = null;
+let interactiveRuntimeApi: PiPermissionSystemRuntimeApi | null = null;
 let focusTracker: TerminalFocusTracker | null = null;
 
 // Session id of the interactive (hasUI) session in this process, if any.
@@ -1044,9 +1046,10 @@ export function isSubagentExecutionContext(ctx: ExtensionContext): boolean {
   return isPathWithinDirectory(normalizedSessionDir, normalizedSubagentRoot);
 }
 
-function canRequestPermissionConfirmation(ctx: ExtensionContext): boolean {
+/** Check whether this session can resolve an ask locally or through its parent. */
+function canRequestPermissionConfirmation(ctx: ExtensionContext, config: PermissionSystemExtensionConfig): boolean {
   return canResolveAskPermissionRequest({
-    config: extensionConfig,
+    config,
     hasUI: ctx.hasUI,
     isSubagent: isSubagentExecutionContext(ctx),
   });
@@ -1318,6 +1321,7 @@ function writeJsonFileAtomic(filePath: string, value: unknown): void {
   }
 }
 
+/** Read a request and its fixed deadline; log and ignore malformed input. */
 async function readForwardedPermissionRequest(
   filePath: string,
 ): Promise<ForwardedPermissionRequest | null> {
@@ -1329,6 +1333,7 @@ async function readForwardedPermissionRequest(
       typeof parsed.id !== "string" ||
       typeof parsed.responseNonce !== "string" ||
       typeof parsed.createdAt !== "number" ||
+      !Value.Check(Type.Union([Type.Null(), Type.Number()]), parsed.expiresAt) ||
       typeof parsed.requesterSessionId !== "string" ||
       typeof parsed.targetSessionId !== "string" ||
       typeof parsed.requesterAgentName !== "string" ||
@@ -1344,6 +1349,7 @@ async function readForwardedPermissionRequest(
       id: parsed.id,
       responseNonce: parsed.responseNonce,
       createdAt: parsed.createdAt,
+      expiresAt: parsed.expiresAt,
       requesterSessionId: parsed.requesterSessionId,
       targetSessionId: parsed.targetSessionId,
       requesterAgentName: parsed.requesterAgentName,
@@ -1415,9 +1421,11 @@ function formatForwardedPermissionPrompt(
   ].join("\n");
 }
 
+/** Forward an ask and wait until the configured deadline, or indefinitely when the timeout is off. */
 async function waitForForwardedPermissionApproval(
   ctx: ExtensionContext,
   message: string,
+  config: PermissionSystemExtensionConfig,
 ): Promise<PermissionPromptDecision> {
   const requesterSessionId = getSessionId(ctx);
   const targetSessionId = resolvePermissionForwardingTargetSessionId({
@@ -1449,10 +1457,15 @@ async function waitForForwardedPermissionApproval(
     getActiveAgentName(ctx) ||
     getActiveAgentNameFromSystemPrompt(getContextSystemPrompt(ctx)) ||
     "unknown";
+  const createdAt = Date.now();
   const request: ForwardedPermissionRequest = {
     id: requestId,
     responseNonce,
-    createdAt: Date.now(),
+    createdAt,
+    expiresAt:
+      config.forwardedPromptTimeoutSeconds === null
+        ? null
+        : createdAt + config.forwardedPromptTimeoutSeconds * 1000,
     requesterSessionId,
     targetSessionId,
     requesterAgentName,
@@ -1481,7 +1494,7 @@ async function waitForForwardedPermissionApproval(
     return { approved: false, state: "denied" };
   }
 
-  const deadline = request.createdAt + PERMISSION_FORWARDING_TIMEOUT_MS;
+  const deadline = request.expiresAt ?? Number.POSITIVE_INFINITY;
   while (Date.now() < deadline) {
     if (existsSync(responsePath)) {
       const response = await readForwardedPermissionResponse(responsePath);
@@ -1554,8 +1567,10 @@ function createForwardedPermissionLogDetails(
 type ProcessForwardedPermissionRequestsOptions = {
   preserveLocation?: boolean;
   turnRuntime?: TurnRuntimeTracker;
+  getConfig?: () => PermissionSystemExtensionConfig;
 };
 
+/** Resolve forwarded requests with the receiving session's current settings. */
 export async function processForwardedPermissionRequests(
   ctx: ExtensionContext,
   options: ProcessForwardedPermissionRequestsOptions = {},
@@ -1636,24 +1651,29 @@ export async function processForwardedPermissionRequests(
       requestPath,
     };
 
-    const expiresAt = request.createdAt + PERMISSION_FORWARDING_TIMEOUT_MS;
+    const config = options.getConfig?.() ?? extensionConfig;
+    const expiresAt = request.expiresAt ?? Number.POSITIVE_INFINITY;
     const requestAgeMs = Date.now() - request.createdAt;
+    const requestTimeoutMs =
+      request.expiresAt === null
+        ? Number.POSITIVE_INFINITY
+        : request.expiresAt - request.createdAt;
     let decision: PermissionPromptDecision = {
       approved: false,
       state: "denied",
     };
-    if (requestAgeMs >= PERMISSION_FORWARDING_TIMEOUT_MS) {
+    if (requestAgeMs >= requestTimeoutMs) {
       writeReviewEntry("forwarded_permission.expired", {
         ...forwardedPermissionLogDetails,
         requestAgeMs,
-        timeoutMs: PERMISSION_FORWARDING_TIMEOUT_MS,
+        timeoutMs: requestTimeoutMs,
       });
       safeDeleteFile(
         requestPath,
         `${location.label} forwarded permission request`,
       );
       continue;
-    } else if (shouldAutoApprovePermissionState("ask", extensionConfig)) {
+    } else if (shouldAutoApprovePermissionState("ask", config)) {
       writeReviewEntry(
         "forwarded_permission.auto_approved",
         forwardedPermissionLogDetails,
@@ -1664,7 +1684,7 @@ export async function processForwardedPermissionRequests(
         "forwarded_permission.prompted",
         forwardedPermissionLogDetails,
       );
-      if (extensionConfig.debug) {
+      if (config.debug) {
         try {
           ctx.ui.notify(
             `Subagent '${request.requesterAgentName || "unknown"}' is waiting for permission approval.`,
@@ -1682,20 +1702,20 @@ export async function processForwardedPermissionRequests(
       );
       try {
         const forwardedPromptTimeoutSeconds =
-          extensionConfig.forwardedPromptTimeoutSeconds;
+          request.expiresAt === null ? null : requestTimeoutMs / 1000;
         const timeoutMs =
           forwardedPromptTimeoutSeconds !== null &&
           forwardedPromptTimeoutSeconds > 0
-            ? forwardedPromptTimeoutSeconds * 1000
+            ? Math.max(1, requestTimeoutMs - requestAgeMs)
             : undefined;
         const timeoutDenialReason =
-          timeoutMs !== undefined && Date.now() + timeoutMs < expiresAt
-            ? `permission_timeout: forwarded permission prompt was not answered within ${forwardedPromptTimeoutSeconds} seconds.`
-            : "permission_timeout: forwarded permission request expired.";
+          timeoutMs !== undefined
+            ? `permission_timeout: forwarded permission request was not answered within ${forwardedPromptTimeoutSeconds} seconds of creation.`
+            : undefined;
         const promptMessage =
           timeoutMs !== undefined
-            ? `This forwarded prompt auto-denies after ${forwardedPromptTimeoutSeconds} seconds or when the subagent request expires.`
-            : "This forwarded prompt waits until answered or the subagent request expires.";
+            ? `This forwarded request has ${Math.ceil(timeoutMs / 1000)} seconds remaining before it is denied.`
+            : "This forwarded prompt will wait indefinitely until answered.";
 
         const requestDecision = () =>
           requestPermissionDecisionFromUi(
@@ -1704,7 +1724,11 @@ export async function processForwardedPermissionRequests(
             [formatForwardedPermissionPrompt(request), "", promptMessage].join(
               "\n",
             ),
-            { timeoutMs, expiresAt, timeoutDenialReason },
+            {
+              timeoutMs,
+              expiresAt: request.expiresAt ?? undefined,
+              timeoutDenialReason,
+            },
           );
         decision = await (options.turnRuntime?.pauseWhile(requestDecision) ??
           requestDecision());
@@ -1723,7 +1747,7 @@ export async function processForwardedPermissionRequests(
       writeReviewEntry("forwarded_permission.expired", {
         ...forwardedPermissionLogDetails,
         requestAgeMs: Date.now() - request.createdAt,
-        timeoutMs: PERMISSION_FORWARDING_TIMEOUT_MS,
+        timeoutMs: requestTimeoutMs,
       });
       safeDeleteFile(
         requestPath,
@@ -1779,9 +1803,11 @@ export async function processForwardedPermissionRequests(
   }
 }
 
+/** Resolve an ask through the local UI or the parent using this session's settings. */
 async function confirmPermission(
   ctx: ExtensionContext,
   message: string,
+  config: PermissionSystemExtensionConfig,
   sessionFamilies?: readonly string[],
 ): Promise<PermissionPromptDecision> {
   if (ctx.hasUI) {
@@ -1794,7 +1820,7 @@ async function confirmPermission(
     return { approved: false, state: "denied" };
   }
 
-  return waitForForwardedPermissionApproval(ctx, message);
+  return waitForForwardedPermissionApproval(ctx, message, config);
 }
 
 function derivePiProjectPaths(cwd: string | undefined | null): {
@@ -1833,7 +1859,15 @@ type CachedPromptStateResult = {
   entries: SkillPromptEntry[];
 };
 
+/** Register permission enforcement with independent session approval state and parent forwarding. */
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
+  let sessionConfig = cloneDefaultConfig();
+  let runtimeApi: PiPermissionSystemRuntimeApi | null = null;
+  /** Update this binding's settings and the diagnostic fallback without sharing approval state. */
+  const updateSessionConfig = (config: PermissionSystemExtensionConfig): void => {
+    sessionConfig = normalizePermissionSystemConfig(config);
+    setExtensionConfig(sessionConfig);
+  };
   let activeSkillEntries: SkillPromptEntry[] = [];
   const explicitlyRequestedSkillNames = new Set<string>();
   let lastKnownActiveAgentName: string | null = null;
@@ -1887,7 +1921,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const loadInitialExtensionConfigState =
     (): PermissionSystemConfigLoadResult => {
       const result = loadPermissionSystemConfig();
-      setExtensionConfig(result.config);
+      updateSessionConfig(result.config);
       return result;
     };
 
@@ -1899,9 +1933,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     const result = loadPermissionSystemConfig();
     const config: PermissionSystemExtensionConfig = {
       ...result.config,
-      yoloMode: extensionConfig.yoloMode,
+      yoloMode: sessionConfig.yoloMode,
     };
-    setExtensionConfig(config);
+    updateSessionConfig(config);
     return { ...result, config };
   };
 
@@ -1964,7 +1998,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // (debug/desktopNotifications/forwardedPromptTimeoutSeconds) failed. The
     // synced fields then also apply to this session only; the error
     // notification tells the user the change will not survive a restart.
-    setExtensionConfig(normalized);
+    updateSessionConfig(normalized);
     syncPermissionSystemStatusWhenPossible(normalized, ctx);
 
     if (!saved.success) {
@@ -1993,7 +2027,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   ): YoloModeControlResult => {
     if (typeof enabled !== "boolean") {
       return {
-        yoloMode: extensionConfig.yoloMode,
+        yoloMode: sessionConfig.yoloMode,
         changed: false,
         persisted: false,
         error: "setYoloMode(enabled) requires a boolean value.",
@@ -2001,15 +2035,15 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     const normalized = normalizePermissionSystemConfig({
-      ...extensionConfig,
+      ...sessionConfig,
       yoloMode: enabled,
     });
-    const changed = extensionConfig.yoloMode !== normalized.yoloMode;
+    const changed = sessionConfig.yoloMode !== normalized.yoloMode;
 
     // Yolo mode is session-scoped: toggles apply to this session's in-memory
     // config only and are never written to the shared config file, so they
     // cannot propagate to other sessions. `persisted` is therefore always false.
-    setExtensionConfig(normalized);
+    updateSessionConfig(normalized);
     syncPermissionSystemStatusWhenPossible(normalized);
     writeDebugEntry("yolo_mode.updated", {
       changed,
@@ -2029,18 +2063,19 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   const initialConfigResult = loadInitialExtensionConfigState();
 
-  if (!extensionConfig.enabled) {
+  if (!sessionConfig.enabled) {
     return;
   }
 
   applyExtensionConfigSideEffects(initialConfigResult);
 
-  runtimeApi = registerPiPermissionSystemRuntimeApi({
-    getYoloMode: () => extensionConfig.yoloMode,
+  runtimeApi = {
+    getYoloMode: () => sessionConfig.yoloMode,
     setYoloMode: setYoloModeFromRuntimeApi,
     toggleYoloMode: (options?: YoloModeControlOptions) =>
-      setYoloModeFromRuntimeApi(!extensionConfig.yoloMode, options),
-  });
+      setYoloModeFromRuntimeApi(!sessionConfig.yoloMode, options),
+  };
+  if (!interactiveRuntimeApi) registerPiPermissionSystemRuntimeApi(runtimeApi);
 
   // Entry renderers and their live `entry_appended` events arrived after some
   // supported Pi versions. Feature-detect them so older runtimes keep their
@@ -2114,7 +2149,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     description: "Toggle YOLO mode for this session",
     handler: async (_args, ctx) => {
       runtimeContext = ctx;
-      const result = setYoloModeFromRuntimeApi(!extensionConfig.yoloMode, {
+      const result = setYoloModeFromRuntimeApi(!sessionConfig.yoloMode, {
         source: "yolo-command",
       });
       if (ctx.hasUI) {
@@ -2130,7 +2165,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         "./config-modal.js"
       );
       await openPermissionSystemSettingsModal(ctx, {
-        getConfig: () => extensionConfig,
+        getConfig: () => sessionConfig,
         setConfig: saveExtensionConfig,
         getConfigPath: getPermissionSystemConfigPath,
       });
@@ -2228,7 +2263,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     const decisionPromise = (async (): Promise<PermissionPromptDecision> => {
-      if (shouldAutoApprovePermissionState("ask", extensionConfig)) {
+      if (shouldAutoApprovePermissionState("ask", sessionConfig)) {
         reviewPermissionDecision("permission_request.auto_approved", {
           ...details,
           resolution: "auto_response",
@@ -2251,7 +2286,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         notifyPermissionWaitingIfUnfocused(details.message);
       }
 
-      const decision = await turnRuntime.pauseWhile(() => confirmPermission(ctx, details.message, details.sessionFamilies));
+      const decision = await turnRuntime.pauseWhile(() => confirmPermission(ctx, details.message, sessionConfig, details.sessionFamilies));
       const persistsSessionApproval = isSessionPersistentDecisionState(decision.state);
       reviewPermissionDecision(decision.approved ? "permission_request.approved" : "permission_request.denied", {
         ...details,
@@ -2329,6 +2364,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     void processForwardedPermissionRequests(currentContext, {
       preserveLocation: true,
       turnRuntime,
+      getConfig: () => sessionConfig,
     }).finally(() => {
       isProcessingForwardedRequests = false;
       if (pendingForwardedRequestScan) {
@@ -2524,6 +2560,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   const refreshSessionRuntimeState = (ctx: ExtensionContext): void => {
     runtimeContext = ctx;
+    if (ctx.hasUI && runtimeApi) {
+      interactiveRuntimeApi = runtimeApi;
+      registerPiPermissionSystemRuntimeApi(runtimeApi);
+    }
     resetShownWarnings();
     refreshExtensionConfig(ctx);
     permissionManager = createPermissionManagerForCwd(ctx.cwd, notifyWarning);
@@ -2580,6 +2620,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     recentPermissionPromptDecisions.clear();
     resetShownWarnings();
     runtimeContext = null;
+    if (interactiveRuntimeApi === runtimeApi) {
+      interactiveRuntimeApi = null;
+      interactiveForwardingSessionId = null;
+    }
     unregisterPiPermissionSystemRuntimeApi(runtimeApi ?? undefined);
     explicitlyRequestedSkillNames.clear();
     runtimeApi = null;
@@ -2801,7 +2845,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               readPath,
               agentName ?? undefined,
             );
-            if (!canRequestPermissionConfirmation(ctx)) {
+            if (!canRequestPermissionConfirmation(ctx, sessionConfig)) {
               writeReviewEntry("permission_request.blocked", {
                 ...skillReadBlockedFields,
                 prompt: message,
@@ -2936,7 +2980,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           permissionCwd,
           agentName ?? undefined,
         );
-        if (!canRequestPermissionConfirmation(ctx)) {
+        if (!canRequestPermissionConfirmation(ctx, sessionConfig)) {
           writeReviewEntry("permission_request.blocked", {
             ...buildToolCallBlockedEntryFields(
               event.toolCallId,
@@ -3015,7 +3059,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         const envLogContext = getPermissionLogContext(envCheck, input);
         const envMessage = `Reading '.env' file '${filePath}' requires approval.`;
 
-        if (!canRequestPermissionConfirmation(ctx)) {
+        if (!canRequestPermissionConfirmation(ctx, sessionConfig)) {
           writeReviewEntry("permission_request.blocked", {
             source: "tool_call",
             toolCallId: event.toolCallId,
@@ -3115,7 +3159,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           : undefined;
 
       const message = formatAskPrompt(check, agentName ?? undefined, input);
-      if (!canRequestPermissionConfirmation(ctx)) {
+      if (!canRequestPermissionConfirmation(ctx, sessionConfig)) {
         writeReviewEntry("permission_request.blocked", {
           ...buildToolCallBlockedEntryFields(
             event.toolCallId,

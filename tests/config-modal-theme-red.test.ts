@@ -204,7 +204,7 @@ await runIssue27RedTest("ISSUE27-RED-1: direct settings modal opens without requ
   await assertNoThemeInitializationFailure("Direct openPermissionSystemSettingsModal invocation", async () => {
     await openPermissionSystemSettingsModal(
       harness.ctx as never,
-      createController("C:/tmp/pi-permission-system/issue-27-direct-config.json"),
+      createController("C:/tmp/pi-permission-system/issue-27-direct-pi-permissions.jsonc"),
     );
   });
 
@@ -222,7 +222,7 @@ await runIssue27RedTest("ISSUE27-RED-2: exported permission-system command handl
         definition = nextDefinition;
       },
     } as never,
-    createController("C:/tmp/pi-permission-system/issue-27-registered-config.json") as never,
+    createController("C:/tmp/pi-permission-system/issue-27-registered-pi-permissions.jsonc"),
   );
 
   const registeredDefinition = getRegisteredDefinition(definition);
@@ -246,7 +246,7 @@ await runIssue27RedTest("ISSUE27-RED-3: interactive /permission-system invocatio
         definition = nextDefinition;
       },
     } as never,
-    createController("C:/tmp/pi-permission-system/issue-27-legacy-args-config.json") as never,
+    createController("C:/tmp/pi-permission-system/issue-27-legacy-args-pi-permissions.jsonc"),
   );
 
   const registeredDefinition = getRegisteredDefinition(definition);
@@ -268,7 +268,7 @@ await runIssue27RedTest("ISSUE27-RED-4: extension-registered /permission-system 
   const originalLogsDir = process.env.PI_PERMISSION_SYSTEM_LOGS_DIR;
 
   try {
-    const configPath = join(baseDir, "extension-config.json");
+    const configPath = join(baseDir, "extension-pi-permissions.jsonc");
     const logsDir = join(baseDir, "logs");
     mkdirSync(logsDir, { recursive: true });
     writeFileSync(configPath, `${JSON.stringify(createConfig(), null, 2)}\n`, "utf8");

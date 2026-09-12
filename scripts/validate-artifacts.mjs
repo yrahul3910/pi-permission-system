@@ -80,7 +80,7 @@ function validatePolicyExample(config) {
   }
 }
 
-// This fork intentionally does not ship a root config.json: it is gitignored and
+// This fork intentionally does not ship a root pi-permissions.jsonc: it is gitignored and
 // omitted from the published "files" list so installs fall back to runtime defaults
 // (see commit af1b531). The shipped policy artifact is config/config.example.json,
 // which is fully validated by validatePolicyExample() below.
