@@ -18,6 +18,7 @@ export interface PermissionDecisionUi {
 }
 
 export type PermissionDecisionRequestOptions = {
+  /** Time budget for waiting in the queue and answering the selector. */
   timeoutMs?: number;
   timeoutDenialReason?: string;
   /**
@@ -262,24 +263,68 @@ export async function requestPermissionDecisionFromUi(
   message: string,
   options: PermissionDecisionRequestOptions = {},
 ): Promise<PermissionPromptDecision> {
+  const deadline =
+    options.timeoutMs !== undefined &&
+    Number.isFinite(options.timeoutMs) &&
+    options.timeoutMs > 0
+      ? Date.now() + options.timeoutMs
+      : undefined;
   const previous = pendingPermissionDialogs.get(ui);
   let release = () => {};
   const completed = new Promise<void>((resolve) => {
     release = resolve;
   });
   pendingPermissionDialogs.set(ui, completed);
+  void completed.then(() => {
+    if (pendingPermissionDialogs.get(ui) === completed) {
+      pendingPermissionDialogs.delete(ui);
+    }
+  });
 
   // Pi has one editor slot for selectors and inputs. Keep the entire decision,
   // including a rejection reason, visible until it resolves before opening another.
+  let queueTimer: NodeJS.Timeout | undefined;
+  let isReady = true;
   try {
     if (previous) {
-      await previous;
+      if (deadline === undefined) {
+        await previous;
+      } else {
+        isReady = await Promise.race([
+          previous.then(() => true),
+          new Promise<boolean>((resolve) => {
+            queueTimer = setTimeout(
+              () => resolve(false),
+              Math.max(0, deadline - Date.now()),
+            );
+          }),
+        ]);
+      }
     }
-    return await selectPermissionDecision(ui, title, message, options);
+    clearTimeout(queueTimer);
+    const remainingMs =
+      deadline === undefined ? undefined : deadline - Date.now();
+    if (!isReady || (remainingMs !== undefined && remainingMs <= 0)) {
+      return options.timeoutDenialReason
+        ? {
+            approved: false,
+            state: "reject",
+            denialReason: options.timeoutDenialReason,
+          }
+        : { approved: false, state: "reject" };
+    }
+    return await selectPermissionDecision(ui, title, message, {
+      ...options,
+      timeoutMs: remainingMs,
+    });
   } finally {
-    release();
-    if (pendingPermissionDialogs.get(ui) === completed) {
-      pendingPermissionDialogs.delete(ui);
+    clearTimeout(queueTimer);
+    // Expiration ends this request's wait, but later dialogs must still wait for
+    // the predecessor to close before they can use Pi's editor slot.
+    if (!isReady && previous) {
+      void previous.then(release);
+    } else {
+      release();
     }
   }
 }
