@@ -251,7 +251,40 @@ export function isPermissionDecisionState(
     || value === "reject";
 }
 
+const pendingPermissionDialogs = new WeakMap<
+  PermissionDecisionUi,
+  Promise<void>
+>();
+
 export async function requestPermissionDecisionFromUi(
+  ui: PermissionDecisionUi,
+  title: string,
+  message: string,
+  options: PermissionDecisionRequestOptions = {},
+): Promise<PermissionPromptDecision> {
+  const previous = pendingPermissionDialogs.get(ui);
+  let release = () => {};
+  const completed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  pendingPermissionDialogs.set(ui, completed);
+
+  // Pi has one editor slot for selectors and inputs. Keep the entire decision,
+  // including a rejection reason, visible until it resolves before opening another.
+  try {
+    if (previous) {
+      await previous;
+    }
+    return await selectPermissionDecision(ui, title, message, options);
+  } finally {
+    release();
+    if (pendingPermissionDialogs.get(ui) === completed) {
+      pendingPermissionDialogs.delete(ui);
+    }
+  }
+}
+
+async function selectPermissionDecision(
   ui: PermissionDecisionUi,
   title: string,
   message: string,
