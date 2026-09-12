@@ -465,6 +465,80 @@ await runAsyncTest("Extension exposes a runtime YOLO API for other extensions", 
   assert.equal((globalThis as GlobalWithPermissionSystem).__piPermissionSystem, undefined);
 });
 
+await runAsyncTest(
+  "/yolo toggles session approval behavior and status without saving config",
+  async () => {
+    const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
+    const notifications: Array<{ message: string; level: string }> = [];
+    const harness = createToolCallHarness(
+      { defaultPolicy: { tools: "ask" }, tools: { write: "deny" } },
+      ["read", "write"],
+    );
+
+    try {
+      const command = harness.registeredCommands.get("yolo");
+      assert.ok(command);
+      const ctx = createMockContext(harness.cwd, harness.prompts, {
+        hasUI: true,
+        statusUpdates,
+        notifications,
+      });
+      const originalConfig = readFileSync(harness.extensionConfigPath, "utf8");
+      const readEvent = {
+        toolName: "read",
+        input: { path: join(harness.cwd, "example.txt") },
+      };
+
+      await command.handler("", ctx);
+      assert.deepEqual(statusUpdates.at(-1), {
+        key: "pi-permission-system",
+        value: "yolo",
+      });
+      assert.deepEqual(notifications.at(-1), {
+        message: "YOLO mode on.",
+        level: "info",
+      });
+      await harness.handlers.before_agent_start?.({ systemPrompt: "" }, ctx);
+      const enabledRead = await runToolCall(harness, {
+        ...readEvent,
+        toolCallId: "yolo-read-on",
+      });
+      assert.notEqual(enabledRead.block, true);
+      assert.equal(
+        (
+          await runToolCall(harness, {
+            toolName: "write",
+            toolCallId: "yolo-denied-write",
+            input: { path: join(harness.cwd, "denied.txt"), content: "hello" },
+          })
+        ).block,
+        true,
+      );
+
+      await command.handler("", ctx);
+      assert.deepEqual(statusUpdates.at(-1), {
+        key: "pi-permission-system",
+        value: undefined,
+      });
+      assert.deepEqual(notifications.at(-1), {
+        message: "YOLO mode off.",
+        level: "info",
+      });
+      const disabledRead = await runToolCall(harness, {
+        ...readEvent,
+        toolCallId: "yolo-read-off",
+      });
+      assert.equal(disabledRead.block, true);
+      assert.equal(
+        readFileSync(harness.extensionConfigPath, "utf8"),
+        originalConfig,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+);
+
 function createModalTestTheme(): Record<string, unknown> {
   return {
     fg: (_color: string, text: string) => text,
