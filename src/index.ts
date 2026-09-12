@@ -2095,6 +2095,19 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     return modelOptionCompatibilityRegistration;
   };
 
+  pi.registerCommand("yolo", {
+    description: "Toggle YOLO mode for this session",
+    handler: async (_args, ctx) => {
+      runtimeContext = ctx;
+      const result = setYoloModeFromRuntimeApi(!extensionConfig.yoloMode, {
+        source: "yolo-command",
+      });
+      if (ctx.hasUI) {
+        ctx.ui.notify(`YOLO mode ${result.yoloMode ? "on" : "off"}.`, "info");
+      }
+    },
+  });
+
   pi.registerCommand("permission-system", {
     description: PERMISSION_SYSTEM_COMMAND_DESCRIPTION,
     handler: createPermissionSystemCommandHandler(async (ctx) => {

@@ -340,7 +340,7 @@ errs on the side of notifying.
 
 ### Runtime YOLO Control
 
-Use `/permission-system` to open the settings modal and inspect or change yolo mode interactively. In interactive TUI mode, the settings modal uses Pi's renderer-provided theme and does not require a separate global `initTheme()` call before opening.
+Use `/yolo` to toggle YOLO mode on or off for the current session. The command reports the new state and updates the status bar. Use `/permission-system` to open the settings modal and inspect or change yolo mode interactively. In interactive TUI mode, the settings modal uses Pi's renderer-provided theme and does not require a separate global `initTheme()` call before opening.
 
 Other extensions can toggle yolo mode immediately through the shared runtime API:
 
