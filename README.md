@@ -663,6 +663,8 @@ Protected paths are **denied to file tools and shell commands by default**. YOLO
 }
 ```
 
+File tools check both the original path and its absolute and session-relative forms, so a custom pattern such as `secrets/*` covers relative and absolute requests within the session directory. `grep.glob` and `find.pattern` are checked as filename selectors, including relative to their search directory; `grep.pattern` is a content query. These checks inspect explicit paths and selectors, not the files returned by a broad search, and do not filter protected files from search results.
+
 Protected-path checks also see the **literal fragments** of arguments and redirect targets that contain expansions, so `cat "$HOME/.env"` and `tr x y < "$DIR/.env"` are denied even though the full path cannot be resolved statically. The residual limitation: a variable whose *entire value* names a protected file (`FILE=.env; cat $FILE`) cannot be caught without runtime dataflow — protected paths are a tripwire against accidental and casual access, not a sandbox. (Restricted registry rows already refuse to vouch for any invocation carrying expansions, and unknown commands with expansions use matching prefix rules, then the effective bash default, normally `ask`.)
 
 > **Migrating from the pre-redesign format:** glob maps like `"rg *": "allow"` and the `bashSafety` section are no longer read; loading a config that contains them logs a one-time warning with suggested prefix-rule replacements. Most old allow entries are simply covered by the registry and can be dropped; `.env`-style deny globs are covered by protected paths.

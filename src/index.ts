@@ -2943,7 +2943,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       }
     } else if (
       ctx.cwd &&
-      (getNonEmptyString(inputRecord.path) ||
+      (PATH_BEARING_TOOLS.has(toolName) ||
+        getNonEmptyString(inputRecord.path) ||
         getNonEmptyString(inputRecord.file_path)) &&
       !getNonEmptyString(inputRecord.cwd)
     ) {

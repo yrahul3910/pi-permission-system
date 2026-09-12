@@ -928,6 +928,90 @@ runTest("implicit directory tools use the protected working directory", () => {
   }
 });
 
+runTest(
+  "protected search selectors and relative custom paths use the same guard",
+  () => {
+    const { manager, cleanup } = createManager({
+      defaultPolicy: { tools: "allow" },
+      protectedPaths: ["secrets/*"],
+    });
+    try {
+      const cases = [
+        { toolName: "grep", input: { pattern: "secret", glob: ".env" } },
+        {
+          toolName: "grep",
+          input: { pattern: "secret", glob: "**/.env.local" },
+        },
+        { toolName: "find", input: { pattern: ".env" } },
+        { toolName: "find", input: { pattern: "**/.ssh/*" } },
+        { toolName: "read", input: { path: "secrets/key.json" } },
+        { toolName: "read", input: { path: "/workspace/secrets/key.json" } },
+        { toolName: "edit", input: { file_path: "./secrets/key.json" } },
+        {
+          toolName: "grep",
+          input: { path: "secrets", pattern: "secret", glob: "*.json" },
+        },
+        { toolName: "find", input: { path: "secrets", pattern: "*.json" } },
+      ];
+      for (const { toolName, input } of cases) {
+        const request = { ...input, cwd: "/workspace" };
+        assert.equal(
+          manager.checkPermission(toolName, request).state,
+          "deny",
+          JSON.stringify(input),
+        );
+        assert.equal(
+          manager.checkPermission(toolName, request, undefined, [], {
+            bypassProtectedPaths: true,
+          }).state,
+          "allow",
+        );
+      }
+      assert.equal(
+        manager.checkPermission("grep", {
+          pattern: ".env",
+          glob: "*.ts",
+          cwd: "/workspace",
+        }).state,
+        "allow",
+        "content patterns are not filename selectors",
+      );
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+await runAsyncTest(
+  "pathless directory tools keep the session cwd in both policy checks",
+  async () => {
+    const harness = createToolCallHarness(
+      { defaultPolicy: { tools: "allow" } },
+      ["find", "grep", "ls"],
+    );
+    const previousCwd = process.cwd();
+    const protectedCwd = join(harness.baseDir, ".ssh");
+    mkdirSync(protectedCwd);
+    try {
+      process.chdir(protectedCwd);
+      for (const toolName of ["find", "grep", "ls"]) {
+        const result = await runToolCall(harness, {
+          toolName,
+          input: { pattern: "safe", glob: "*.ts" },
+        });
+        assert.notEqual(
+          result.block,
+          true,
+          `${toolName} must use the safe session directory`,
+        );
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await harness.cleanup();
+    }
+  },
+);
+
 runTest("Permission-system extension config defaults debug and yolo mode off", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-"));
   const configPath = join(baseDir, "pi-permissions.jsonc");

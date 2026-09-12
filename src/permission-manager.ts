@@ -1176,7 +1176,7 @@ export class PermissionManager {
     );
   }
 
-  /** Deny built-in file operations on protected paths, including implicit search/list directories. */
+  /** Check file paths and explicit search selectors in raw, absolute, and cwd-relative forms. Does not enumerate search results. */
   checkProtectedPath(
     toolName: string,
     input: unknown,
@@ -1185,25 +1185,45 @@ export class PermissionManager {
     if (!BUILT_IN_TOOL_PERMISSION_NAMES.has(toolName) || toolName === "bash") {
       return null;
     }
-    const resource =
-      getPathResourceFromInput(input) ??
-      (["find", "grep", "ls"].includes(toolName)
-        ? getPathResourceFromInput({ ...toRecord(input), path: "." })
-        : null);
-    const pattern = resource
-      ? this.resolvePermissions(agentName).bashPolicy.protectedPaths.matches(
-          resource,
-        )
-      : null;
-    return pattern
-      ? {
-          toolName,
-          state: "deny",
-          source: "tool",
-          matchedPattern: pattern,
-          target: resource ?? undefined,
+    const record = toRecord(input);
+    const cwd = getNonEmptyString(record.cwd) ?? process.cwd();
+    const path =
+      getNonEmptyString(record.path) ??
+      getNonEmptyString(record.file_path) ??
+      (["find", "grep", "ls"].includes(toolName) ? "." : null);
+    const selector =
+      toolName === "grep"
+        ? getNonEmptyString(record.glob)
+        : toolName === "find"
+          ? getNonEmptyString(record.pattern)
+          : null;
+    const paths = path ? [path] : [];
+    if (selector) {
+      paths.push(selector, join(path ?? ".", selector));
+    }
+    const matcher =
+      this.resolvePermissions(agentName).bashPolicy.protectedPaths;
+    for (const candidate of paths) {
+      const absolutePath = normalizePathResourceForPermission(candidate, cwd);
+      const forms = [
+        candidate.replaceAll("\\", "/"),
+        absolutePath,
+        relative(cwd, absolutePath).replaceAll("\\", "/"),
+      ];
+      for (const target of forms) {
+        const pattern = matcher.matches(target);
+        if (pattern) {
+          return {
+            toolName,
+            state: "deny",
+            source: "tool",
+            matchedPattern: pattern,
+            target,
+          };
         }
-      : null;
+      }
+    }
+    return null;
   }
 
   /** Evaluate policy, optionally skipping only protected-path guards. */
