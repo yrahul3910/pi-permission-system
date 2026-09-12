@@ -31,6 +31,8 @@ export interface PermissionSystemExtensionConfig {
   enabled?: boolean;
   debug: boolean;
   yoloMode: boolean;
+  /** Allow YOLO to skip protected-path checks; explicit policy denies still apply. */
+  yoloBypassProtectedPaths: boolean;
   desktopNotifications: boolean;
   forwardedPromptTimeoutSeconds: number | null;
 }
@@ -50,6 +52,7 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   enabled: true,
   debug: false,
   yoloMode: false,
+  yoloBypassProtectedPaths: false,
   desktopNotifications: true,
   forwardedPromptTimeoutSeconds: 600,
 };
@@ -99,6 +102,7 @@ export function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     enabled: DEFAULT_EXTENSION_CONFIG.enabled,
     debug: DEFAULT_EXTENSION_CONFIG.debug,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
+    yoloBypassProtectedPaths: DEFAULT_EXTENSION_CONFIG.yoloBypassProtectedPaths,
     desktopNotifications: DEFAULT_EXTENSION_CONFIG.desktopNotifications,
     forwardedPromptTimeoutSeconds:
       DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
@@ -124,6 +128,7 @@ export function normalizePermissionSystemConfig(
     enabled: record.enabled !== false,
     debug: record.debug === true,
     yoloMode: record.yoloMode === true,
+    yoloBypassProtectedPaths: record.yoloBypassProtectedPaths === true,
     // Defaults to enabled; only an explicit `false` turns it off.
     desktopNotifications: record.desktopNotifications !== false,
     forwardedPromptTimeoutSeconds,
@@ -243,6 +248,7 @@ export function savePermissionSystemConfig(
   return saveConfigFields(
     {
       debug: normalized.debug,
+      yoloBypassProtectedPaths: normalized.yoloBypassProtectedPaths,
       desktopNotifications: normalized.desktopNotifications,
       forwardedPromptTimeoutSeconds: normalized.forwardedPromptTimeoutSeconds,
     },

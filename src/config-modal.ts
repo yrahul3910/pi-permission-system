@@ -61,6 +61,14 @@ function buildSettingItems(
       values: ON_OFF,
     },
     {
+      id: "yoloBypassProtectedPaths",
+      label: "YOLO bypasses protected paths",
+      description:
+        "Allow YOLO to skip protected-path checks for file and shell tools; explicit deny rules still apply",
+      currentValue: toOnOff(config.yoloBypassProtectedPaths),
+      values: ON_OFF,
+    },
+    {
       id: "desktopNotifications",
       label: "Desktop notifications",
       description:
@@ -90,6 +98,8 @@ function applySetting(
       return { ...config, debug: value === "on" };
     case "yoloMode":
       return { ...config, yoloMode: value === "on" };
+    case "yoloBypassProtectedPaths":
+      return { ...config, yoloBypassProtectedPaths: value === "on" };
     case "desktopNotifications":
       return { ...config, desktopNotifications: value === "on" };
     case "forwardedPromptTimeoutSeconds":
@@ -109,6 +119,10 @@ function syncSettingValues(
 ): void {
   settingsList.updateValue("debug", toOnOff(config.debug));
   settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
+  settingsList.updateValue(
+    "yoloBypassProtectedPaths",
+    toOnOff(config.yoloBypassProtectedPaths),
+  );
   settingsList.updateValue(
     "desktopNotifications",
     toOnOff(config.desktopNotifications),

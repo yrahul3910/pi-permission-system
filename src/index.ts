@@ -2786,6 +2786,31 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       };
     }
 
+    const bypassProtectedPaths =
+      sessionConfig.yoloMode && sessionConfig.yoloBypassProtectedPaths;
+    const protectedCheck = bypassProtectedPaths
+      ? null
+      : permissionManager.checkProtectedPath(
+          toolName,
+          { ...toRecord(getEventInput(event)), cwd: ctx.cwd },
+          agentName ?? undefined,
+        );
+    if (protectedCheck) {
+      writeReviewEntry("permission_request.blocked", {
+        source: "tool_call",
+        toolCallId: event.toolCallId,
+        toolName,
+        agentName,
+        ...getPermissionLogContext(protectedCheck, getEventInput(event)),
+        resolution: "protected_path_denied",
+      });
+      await extensionLogger.flush();
+      return {
+        block: true,
+        reason: formatDenyReason(protectedCheck, agentName ?? undefined),
+      };
+    }
+
     if (isToolCallEventType("read", event)) {
       const readInputRecord = toRecord(event.input);
       const readPath = getNonEmptyString(readInputRecord.path);
@@ -3046,62 +3071,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       // state === "allow" → fall through to normal permission check
     }
 
-    // Hardcoded: .env files always require approval regardless of tool-level config.
-    if (PATH_BEARING_TOOLS.has(toolName)) {
-      const filePath = getPathBearingToolPath(toolName, input);
-      if (filePath && /\.env$/.test(filePath)) {
-        const envCheck: PermissionCheckResult = {
-          toolName,
-          state: "ask",
-          source: "tool",
-          matchedPattern: "*.env (hardcoded)",
-        };
-        const envLogContext = getPermissionLogContext(envCheck, input);
-        const envMessage = `Reading '.env' file '${filePath}' requires approval.`;
-
-        if (!canRequestPermissionConfirmation(ctx, sessionConfig)) {
-          writeReviewEntry("permission_request.blocked", {
-            source: "tool_call",
-            toolCallId: event.toolCallId,
-            toolName,
-            agentName,
-            ...envLogContext,
-            resolution: "confirmation_unavailable",
-          });
-          return { block: true, reason: envMessage };
-        }
-
-        const envDecision = await promptPermission(ctx, {
-          requestId: event.toolCallId,
-          source: "tool_call",
-          agentName,
-          message: envMessage,
-          toolCallId: event.toolCallId,
-          toolName,
-          ...envLogContext,
-        });
-
-        if (!envDecision.approved) {
-          writeReviewEntry("permission_request.resolved", {
-            source: "tool_call",
-            toolCallId: event.toolCallId,
-            toolName,
-            agentName,
-            ...envLogContext,
-            resolution: "user_denied",
-          });
-          return {
-            block: true,
-            reason: formatUserDeniedReason(envCheck, envDecision.denialReason),
-          };
-        }
-
-        await extensionLogger.flush();
-        return {};
-      }
-    }
-
-    const rawCheck = permissionManager.checkPermission(toolName, input, agentName ?? undefined);
+    const rawCheck = permissionManager.checkPermission(
+      toolName,
+      input,
+      agentName ?? undefined,
+      [],
+      { bypassProtectedPaths },
+    );
     const check = applyPatternApprovalState(
       rawCheck,
       input,
@@ -3113,6 +3089,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
               input,
               agentName ?? undefined,
               sessionAllowPrefixes,
+              { bypassProtectedPaths },
             )
         : undefined,
     );

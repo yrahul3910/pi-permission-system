@@ -82,6 +82,7 @@ runTest("permission-system command exposes no subcommand completions", () => {
   const registeredDefinition = registerForTest({
     debug: false,
     yoloMode: false,
+    yoloBypassProtectedPaths: false,
     desktopNotifications: true,
     forwardedPromptTimeoutSeconds: 30,
   });
@@ -93,6 +94,7 @@ await runAsyncTest("permission-system command only opens the settings modal", as
   const config: PermissionSystemExtensionConfig = {
     debug: true,
     yoloMode: true,
+    yoloBypassProtectedPaths: false,
     desktopNotifications: false,
     forwardedPromptTimeoutSeconds: 30,
   };
@@ -119,6 +121,7 @@ await runAsyncTest("permission-system command only opens the settings modal", as
   assert.deepEqual(config, {
     debug: true,
     yoloMode: true,
+    yoloBypassProtectedPaths: false,
     desktopNotifications: false,
     forwardedPromptTimeoutSeconds: 30,
   });

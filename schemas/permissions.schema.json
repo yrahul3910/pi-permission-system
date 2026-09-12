@@ -102,7 +102,7 @@
       }
     },
     "protectedPaths": {
-      "description": "Additional protected path patterns (globs matched against every argv token and redirection target, whole or per `/`- and `:`-segment). Matches deny the command, outranking every allow including the registry. Extends built-ins like .env, .ssh, id_rsa*, *.pem.",
+      "description": "Additional protected path patterns for file tools and shell arguments/redirections, matched whole or per path segment. Matches deny unless YOLO and yoloBypassProtectedPaths are both enabled. Extends built-ins like .env, .ssh, id_rsa*, *.pem.",
       "type": "array",
       "items": {
         "type": "string",
@@ -171,6 +171,11 @@
       ],
       "default": 600,
       "description": "Seconds a forwarded request can wait, including time before it is displayed. Defaults to 600 (10 minutes); use null to wait indefinitely."
+    },
+    "yoloBypassProtectedPaths": {
+      "type": "boolean",
+      "default": false,
+      "description": "When YOLO is on, bypass protected-path checks for file and shell tools. Explicit policy denies still apply."
     }
   },
   "$defs": {

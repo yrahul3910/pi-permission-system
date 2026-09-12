@@ -8,10 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added `yoloBypassProtectedPaths` (default `false`) to the global permission file and the settings modal. With this option and YOLO enabled, built-in and configured protected paths can be accessed through file tools, `bash`, and `bg_start`; explicit policy denies still apply.
 - Added `/yolo` to toggle the current session's YOLO state and update its status indicator without saving the toggle. Headless sessions do not attempt a UI notification. ([3e97806](https://github.com/yrahul3910/pi-permission-system/commit/3e97806), September 11)
 - Enforced bash and tool permissions for `bg_start`, including the effective tool default, protected paths, shell syntax, and output redirections. A safe bash command does not bypass a background-tool `ask` or `deny`. ([b22a590](https://github.com/yrahul3910/pi-permission-system/commit/b22a590), September 4–5)
 
 ### Changed
+- Apply the shared protected-path list to `read`, `write`, `edit`, `find`, `grep`, and `ls`, including implicit search/list directories and recognized skill reads. Protected paths now deny instead of taking the special `.env` approval path. Ordinary file policy rules are evaluated when protected-path bypass is enabled, closing the `.env` path that previously skipped those rules after approval.
 - Revised denial messages to remove the "Hard stop" label and instructions to report every block to the user; policy enforcement is unchanged. ([cecd6e4](https://github.com/yrahul3910/pi-permission-system/commit/cecd6e4552b4b38f161ef59fb5c23bd2553b81e4), August 6)
 - Expanded the README with a worked `registryOverrides` example, all four policy layers, and a table of contents. ([3818a94](https://github.com/yrahul3910/pi-permission-system/commit/3818a94), August 19)
 - Remove the extension-local `config.json` without migration or fallback. Extension settings and global permission rules now share `~/.pi/agent/pi-permissions.jsonc`; missing settings use defaults. Settings saves preserve JSONC comments, permission rules, and symlinks.
