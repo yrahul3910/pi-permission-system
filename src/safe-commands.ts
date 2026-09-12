@@ -405,6 +405,28 @@ export interface ProtectedPathMatcher {
   matches(token: string): string | null;
 }
 
+const GLOB_CHARS_PATTERN = /[*?[\]]/;
+
+/**
+ * Match a path or selector directly, then check its literal remainder after
+ * removing glob operators. Does not expand globs or enumerate files.
+ */
+export function matchProtectedPathToken(token: string, matcher: ProtectedPathMatcher): string | null {
+  const direct = matcher.matches(token);
+  if (direct) {
+    return direct;
+  }
+  // A glob argument like `.env*` expands to files we cannot enumerate; test
+  // the pattern with its glob characters removed so `.env*` still hits `.env`.
+  if (GLOB_CHARS_PATTERN.test(token)) {
+    const stripped = token.replace(/[*?]|\[[^\]]*\]/g, "");
+    if (stripped && stripped !== token) {
+      return matcher.matches(stripped);
+    }
+  }
+  return null;
+}
+
 /**
  * Build a matcher over the default protected patterns plus config additions.
  * A token matches when the glob covers the whole token or any `/`- or

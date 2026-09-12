@@ -131,6 +131,7 @@ function createConfig(): PermissionSystemExtensionConfig {
   return {
     debug: false,
     yoloMode: false,
+    yoloBypassProtectedPaths: false,
     desktopNotifications: true,
     forwardedPromptTimeoutSeconds: 30,
   };

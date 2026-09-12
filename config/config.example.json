@@ -37,6 +37,7 @@
   "enabled": true,
   "debug": false,
   "yoloMode": false,
+  "yoloBypassProtectedPaths": false,
   "desktopNotifications": true,
   "forwardedPromptTimeoutSeconds": 600
 }

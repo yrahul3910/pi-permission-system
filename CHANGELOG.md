@@ -8,10 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added `yoloBypassProtectedPaths` (default `false`) to the global permission file and the settings modal. With this option and YOLO enabled, built-in and configured protected paths can be accessed through file tools, `bash`, and `bg_start`; explicit policy denies still apply.
 - Added `/yolo` to toggle the current session's YOLO state and update its status indicator without saving the toggle. Headless sessions do not attempt a UI notification. ([3e97806](https://github.com/yrahul3910/pi-permission-system/commit/3e97806), September 11)
 - Enforced bash and tool permissions for `bg_start`, including the effective tool default, protected paths, shell syntax, and output redirections. A safe bash command does not bypass a background-tool `ask` or `deny`. ([b22a590](https://github.com/yrahul3910/pi-permission-system/commit/b22a590), September 4–5)
 
 ### Changed
+- Apply the shared protected-path list to `read`, `write`, `edit`, `find`, `grep`, and `ls`, including implicit search/list directories and recognized skill reads. Protected paths now deny instead of taking the special `.env` approval path. Ordinary file policy rules are evaluated when protected-path bypass is enabled, closing the `.env` path that previously skipped those rules after approval.
 - Revised denial messages to remove the "Hard stop" label and instructions to report every block to the user; policy enforcement is unchanged. ([cecd6e4](https://github.com/yrahul3910/pi-permission-system/commit/cecd6e4552b4b38f161ef59fb5c23bd2553b81e4), August 6)
 - Expanded the README with a worked `registryOverrides` example, all four policy layers, and a table of contents. ([3818a94](https://github.com/yrahul3910/pi-permission-system/commit/3818a94), August 19)
 - Remove the extension-local `config.json` without migration or fallback. Extension settings and global permission rules now share `~/.pi/agent/pi-permissions.jsonc`; missing settings use defaults. Settings saves preserve JSONC comments, permission rules, and symlinks.
@@ -19,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep YOLO state and its runtime API owned by each session. Starting or shutting down an in-process child cannot reset the parent or remove its runtime API; the parent auto-approves forwarded asks while YOLO is enabled.
 
 ### Fixed
+- Check `grep.glob` and `find.pattern` filename selectors against protected paths (including the shell guard’s wildcard check for selectors such as `.env*`), preserve relative custom patterns such as `secrets/*`, and use the session working directory consistently for pathless file tools.
 - Serialize local and forwarded permission dialogs per UI context so concurrent requests cannot replace an active selector or rejection-reason input. Queued requests retain their deadlines; expired or withdrawn requests leave no orphan response, and manual rejections remain distinct from timeouts. ([9121ab8](https://github.com/yrahul3910/pi-permission-system/commit/9121ab8), September 12)
 - Resolve background working directories and session directories through symlinks before external-directory and relative-write checks. Missing or unresolvable directories block execution. Scope background session approvals to the literal command and resolved working directory, so wildcards in an approved command or the same command in another directory cannot reuse that approval. ([6c9c007](https://github.com/yrahul3910/pi-permission-system/commit/6c9c007), [ad868a9](https://github.com/yrahul3910/pi-permission-system/commit/ad868a9), [9e2a4bf](https://github.com/yrahul3910/pi-permission-system/commit/9e2a4bf), September 5)
 - Advertise the interactive forwarding parent only after its forwarding location is set up successfully, avoiding requests sent to a parent whose watcher never started. ([59beaa4](https://github.com/yrahul3910/pi-permission-system/commit/59beaa4), September 2)

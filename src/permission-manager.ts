@@ -24,6 +24,7 @@ import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.j
 import {
   compileRegistry,
   createProtectedPathMatcher,
+  matchProtectedPathToken,
   type CompiledRegistry,
   type ProtectedPathMatcher,
 } from "./safe-commands.js";
@@ -1089,6 +1090,7 @@ export class PermissionManager {
     toolName: string,
     agentName: string | undefined,
     sessionAllowPrefixes: readonly string[][],
+    bypassProtectedPaths: boolean,
   ): PermissionCheckResult {
     const { layers, compiledTools, bashPolicy } = this.resolvePermissions(agentName);
     const toolMatch = findCompiledPermissionMatch(compiledTools, "bash");
@@ -1100,7 +1102,9 @@ export class PermissionManager {
       rules: bashPolicy.rules,
       sessionAllowPrefixes,
       registry: bashPolicy.registry,
-      protectedPaths: bashPolicy.protectedPaths,
+      protectedPaths: bypassProtectedPaths
+        ? { matches: () => null }
+        : bashPolicy.protectedPaths,
       syntax: bashPolicy.syntax,
       defaultState,
       resolveWriteState: (target) => this.resolveBashWriteState(target, cwd, compiledTools, layers),
@@ -1152,10 +1156,16 @@ export class PermissionManager {
    * Public bash entry point for callers holding session approvals (the
    * extension's permission flow): re-evaluates with session allow prefixes
    * included so approved families silence matching pieces of compounds too.
+   * Runtime callers enable protected-path bypass only when YOLO and its bypass setting are on.
    */
   checkBashCommand(
     command: string,
-    options: { agentName?: string; cwd?: string; sessionAllowPrefixes?: readonly string[][] } = {},
+    options: {
+      agentName?: string;
+      cwd?: string;
+      sessionAllowPrefixes?: readonly string[][];
+      bypassProtectedPaths?: boolean;
+    } = {},
   ): PermissionCheckResult {
     return this.evaluateBash(
       command,
@@ -1163,18 +1173,78 @@ export class PermissionManager {
       "bash",
       options.agentName,
       options.sessionAllowPrefixes ?? [],
+      options.bypassProtectedPaths === true,
     );
   }
 
+  /** Check file paths and explicit search selectors in raw, absolute, and cwd-relative forms. Does not enumerate search results. */
+  checkProtectedPath(
+    toolName: string,
+    input: unknown,
+    agentName?: string,
+  ): PermissionCheckResult | null {
+    if (!BUILT_IN_TOOL_PERMISSION_NAMES.has(toolName) || toolName === "bash") {
+      return null;
+    }
+    const record = toRecord(input);
+    const cwd = getNonEmptyString(record.cwd) ?? process.cwd();
+    const path =
+      getNonEmptyString(record.path) ??
+      getNonEmptyString(record.file_path) ??
+      (["find", "grep", "ls"].includes(toolName) ? "." : null);
+    const selector =
+      toolName === "grep"
+        ? getNonEmptyString(record.glob)
+        : toolName === "find"
+          ? getNonEmptyString(record.pattern)
+          : null;
+    const paths = path ? [path] : [];
+    if (selector) {
+      paths.push(selector, join(path ?? ".", selector));
+    }
+    const matcher =
+      this.resolvePermissions(agentName).bashPolicy.protectedPaths;
+    for (const candidate of paths) {
+      const absolutePath = normalizePathResourceForPermission(candidate, cwd);
+      const forms = [
+        candidate.replaceAll("\\", "/"),
+        absolutePath,
+        relative(cwd, absolutePath).replaceAll("\\", "/"),
+      ];
+      for (const target of forms) {
+        const pattern = matchProtectedPathToken(target, matcher);
+        if (pattern) {
+          return {
+            toolName,
+            state: "deny",
+            source: "tool",
+            matchedPattern: pattern,
+            target,
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Evaluate policy, optionally skipping only protected-path guards. */
   checkPermission(
     toolName: string,
     input: unknown,
     agentName?: string,
     sessionAllowPrefixes: readonly string[][] = [],
+    options: { bypassProtectedPaths?: boolean } = {},
   ): PermissionCheckResult {
     const { merged, layers, compiledTools, compiledSpecial, compiledSkills, compiledMcp } = this.resolvePermissions(agentName);
     const normalizedToolName = toolName.trim();
     const toolMatch = findCompiledPermissionMatch(compiledTools, normalizedToolName);
+
+    const protectedCheck = options.bypassProtectedPaths
+      ? null
+      : this.checkProtectedPath(normalizedToolName, input, agentName);
+    if (protectedCheck) {
+      return protectedCheck;
+    }
 
     if (SPECIAL_PERMISSION_KEYS.has(normalizedToolName)) {
       const targets = [...createActionResourceTargets(normalizedToolName, input), normalizedToolName];
@@ -1233,6 +1303,7 @@ export class PermissionManager {
         toolName,
         agentName,
         sessionAllowPrefixes,
+        options.bypassProtectedPaths === true,
       );
       if (
         normalizedToolName === "bg_start" &&

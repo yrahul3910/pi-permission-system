@@ -747,6 +747,275 @@ await runAsyncTest("Extension dedupes identical permission parse warnings across
   }
 });
 
+for (const yoloMode of [false, true]) {
+  for (const yoloBypassProtectedPaths of [false, true]) {
+    await runAsyncTest(
+      `protected file and shell access with YOLO ${yoloMode} and bypass ${yoloBypassProtectedPaths}`,
+      async () => {
+        const files = [
+          ".env",
+          ".env.local",
+          "production.env",
+          ".ssh/id_rsa",
+          ".aws/credentials",
+          "private-secret.txt",
+        ];
+        const fileTools = ["read", "write", "edit", "find", "grep", "ls"];
+        const harness = createToolCallHarness(
+          {
+            defaultPolicy: { tools: "allow", bash: "allow", special: "allow" },
+            protectedPaths: ["private-secret.txt"],
+            bash: { deny: ["rm"] },
+            tools: {
+              "write:*/denied/.env": "deny",
+              "read:*/denied/.env": "deny",
+            },
+          },
+          [...fileTools, "bash", "bg_start"],
+          {
+            extensionConfig: {
+              ...DEFAULT_EXTENSION_CONFIG,
+              yoloMode,
+              yoloBypassProtectedPaths,
+            },
+          },
+        );
+        try {
+          const bypass = yoloMode && yoloBypassProtectedPaths;
+          for (const path of files) {
+            for (const toolName of fileTools) {
+              const result = await runToolCall(harness, {
+                toolName,
+                input: { path },
+              });
+              assert.equal(
+                result.block === true,
+                !bypass,
+                `${toolName} ${path}`,
+              );
+            }
+            for (const toolName of ["bash", "bg_start"]) {
+              for (const command of [
+                `cat ${path} | wc -l`,
+                `cat < ${path}`,
+                `printf value > ${path}`,
+              ]) {
+                const result = await runToolCall(harness, {
+                  toolName,
+                  input: { command },
+                });
+                assert.equal(
+                  result.block === true,
+                  !bypass,
+                  `${toolName}: ${command}`,
+                );
+              }
+            }
+          }
+          for (const toolName of ["read", "write"]) {
+            const result = await runToolCall(harness, {
+              toolName,
+              input: { path: "denied/.env" },
+            });
+            assert.equal(
+              result.block,
+              true,
+              "explicit file deny must survive bypass",
+            );
+          }
+          for (const toolName of ["bash", "bg_start"]) {
+            for (const command of [
+              "cat .env; rm allowed.txt",
+              "printf value > denied/.env",
+            ]) {
+              const result = await runToolCall(harness, {
+                toolName,
+                input: { command },
+              });
+              assert.equal(
+                result.block,
+                true,
+                "explicit command/write deny must survive bypass",
+              );
+            }
+          }
+          assert.deepEqual(
+            harness.prompts,
+            [],
+            "protected paths deny rather than asking",
+          );
+          if (bypass) {
+            getPiPermissionSystemRuntimeApi()?.setYoloMode(false);
+            const result = await runToolCall(harness, {
+              toolName: "read",
+              input: { path: ".env" },
+            });
+            assert.equal(
+              result.block,
+              true,
+              "turning YOLO off restores protection immediately",
+            );
+          }
+        } finally {
+          await harness.cleanup();
+        }
+      },
+    );
+  }
+}
+
+runTest(
+  "protected-path bypass defaults off and persists without saving YOLO",
+  () => {
+    for (const value of [undefined, false, null, "true", 1]) {
+      assert.equal(
+        normalizePermissionSystemConfig({ yoloBypassProtectedPaths: value })
+          .yoloBypassProtectedPaths,
+        false,
+      );
+    }
+    const directory = mkdtempSync(join(tmpdir(), "pi-yolo-protected-config-"));
+    const configPath = join(directory, "pi-permissions.jsonc");
+    try {
+      writeFileSync(
+        configPath,
+        '{\n  // Keep my policy\n  "tools": { "read": "deny" },\n  "yoloMode": false\n}\n',
+      );
+      const saved = savePermissionSystemConfig(
+        {
+          ...DEFAULT_EXTENSION_CONFIG,
+          yoloMode: true,
+          yoloBypassProtectedPaths: true,
+        },
+        configPath,
+      );
+      assert.equal(saved.success, true);
+      const loaded = loadPermissionSystemConfig(configPath);
+      assert.equal(loaded.config.yoloBypassProtectedPaths, true);
+      assert.equal(loaded.config.yoloMode, false);
+      const content = readFileSync(configPath, "utf8");
+      assert.match(content, /Keep my policy/);
+      assert.match(content, /"read": "deny"/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+runTest("implicit directory tools use the protected working directory", () => {
+  const { manager, cleanup } = createManager({
+    defaultPolicy: { tools: "allow" },
+  });
+  try {
+    for (const toolName of ["find", "grep", "ls"]) {
+      assert.equal(
+        manager.checkPermission(toolName, { cwd: "/workspace/.ssh" }).state,
+        "deny",
+      );
+      assert.equal(
+        manager.checkPermission(
+          toolName,
+          { cwd: "/workspace/.ssh" },
+          undefined,
+          [],
+          { bypassProtectedPaths: true },
+        ).state,
+        "allow",
+      );
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+runTest(
+  "protected search selectors and relative custom paths use the same guard",
+  () => {
+    const { manager, cleanup } = createManager({
+      defaultPolicy: { tools: "allow" },
+      protectedPaths: ["secrets/*"],
+    });
+    try {
+      const cases = [
+        { toolName: "grep", input: { pattern: "secret", glob: ".env" } },
+        { toolName: "grep", input: { pattern: "secret", glob: ".env*" } },
+        { toolName: "grep", input: { pattern: "secret", glob: "**/.env*" } },
+        {
+          toolName: "grep",
+          input: { pattern: "secret", glob: "**/.env.local" },
+        },
+        { toolName: "find", input: { pattern: ".env" } },
+        { toolName: "find", input: { pattern: ".env*" } },
+        { toolName: "find", input: { pattern: "**/.ssh*" } },
+        { toolName: "find", input: { pattern: "**/.ssh/*" } },
+        { toolName: "read", input: { path: "secrets/key.json" } },
+        { toolName: "read", input: { path: "/workspace/secrets/key.json" } },
+        { toolName: "edit", input: { file_path: "./secrets/key.json" } },
+        {
+          toolName: "grep",
+          input: { path: "secrets", pattern: "secret", glob: "*.json" },
+        },
+        { toolName: "find", input: { path: "secrets", pattern: "*.json" } },
+      ];
+      for (const { toolName, input } of cases) {
+        const request = { ...input, cwd: "/workspace" };
+        assert.equal(
+          manager.checkPermission(toolName, request).state,
+          "deny",
+          JSON.stringify(input),
+        );
+        assert.equal(
+          manager.checkPermission(toolName, request, undefined, [], {
+            bypassProtectedPaths: true,
+          }).state,
+          "allow",
+        );
+      }
+      assert.equal(
+        manager.checkPermission("grep", {
+          pattern: ".env",
+          glob: "*.ts",
+          cwd: "/workspace",
+        }).state,
+        "allow",
+        "content patterns are not filename selectors",
+      );
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+await runAsyncTest(
+  "pathless directory tools keep the session cwd in both policy checks",
+  async () => {
+    const harness = createToolCallHarness(
+      { defaultPolicy: { tools: "allow" } },
+      ["find", "grep", "ls"],
+    );
+    const previousCwd = process.cwd();
+    const protectedCwd = join(harness.baseDir, ".ssh");
+    mkdirSync(protectedCwd);
+    try {
+      process.chdir(protectedCwd);
+      for (const toolName of ["find", "grep", "ls"]) {
+        const result = await runToolCall(harness, {
+          toolName,
+          input: { pattern: "safe", glob: "*.ts" },
+        });
+        assert.notEqual(
+          result.block,
+          true,
+          `${toolName} must use the safe session directory`,
+        );
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await harness.cleanup();
+    }
+  },
+);
+
 runTest("Permission-system extension config defaults debug and yolo mode off", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-"));
   const configPath = join(baseDir, "pi-permissions.jsonc");
@@ -764,6 +1033,7 @@ runTest("Permission-system extension config defaults debug and yolo mode off", (
       "desktopNotifications",
       "enabled",
       "forwardedPromptTimeoutSeconds",
+      "yoloBypassProtectedPaths",
       "yoloMode",
     ]);
     assert.equal(raw.enabled, true);
@@ -796,6 +1066,7 @@ runTest("Permission-system extension config loads debug and yolo mode when expli
       enabled: true,
       debug: true,
       yoloMode: true,
+      yoloBypassProtectedPaths: false,
       desktopNotifications: true,
       forwardedPromptTimeoutSeconds: DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
     });
@@ -827,6 +1098,7 @@ runTest("Permission-system extension config accepts JSONC comments and trailing 
       enabled: true,
       debug: true,
       yoloMode: true,
+      yoloBypassProtectedPaths: false,
       desktopNotifications: true,
       forwardedPromptTimeoutSeconds: DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
     });
@@ -894,6 +1166,7 @@ runTest("Permission-system extension config save persists normalized synced conf
       {
         debug: true,
         yoloMode: true,
+        yoloBypassProtectedPaths: false,
         desktopNotifications: true,
         forwardedPromptTimeoutSeconds: 30,
       },
@@ -910,6 +1183,7 @@ runTest("Permission-system extension config save persists normalized synced conf
       enabled: true,
       debug: true,
       yoloMode: false,
+      yoloBypassProtectedPaths: false,
       desktopNotifications: true,
       forwardedPromptTimeoutSeconds: 30,
     });
@@ -3907,7 +4181,7 @@ await runAsyncTest("Forwarded permission warning is only shown when debug config
       "utf8",
     );
 
-    setExtensionConfig({ debug: false, yoloMode: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 30 });
+    setExtensionConfig({ debug: false, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 30 });
     await processForwardedPermissionRequests(
       createMockContext(baseDir, [], { hasUI: true, notifications }) as never,
       { preserveLocation: true },
@@ -3933,7 +4207,7 @@ await runAsyncTest("Forwarded permission warning is only shown when debug config
       "utf8",
     );
 
-    setExtensionConfig({ debug: true, yoloMode: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 30 });
+    setExtensionConfig({ debug: true, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 30 });
     await processForwardedPermissionRequests(
       createMockContext(baseDir, [], { hasUI: true, notifications }) as never,
       { preserveLocation: true },
@@ -3978,7 +4252,7 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
       "utf8",
     );
 
-    setExtensionConfig({ debug: false, yoloMode: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 45 });
+    setExtensionConfig({ debug: false, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 45 });
     await processForwardedPermissionRequests(
       createMockContext(baseDir, prompts45, { hasUI: true, selectResponse: "Allow Once" }) as never,
       { preserveLocation: true },
@@ -4005,7 +4279,7 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
       "utf8",
     );
 
-    setExtensionConfig({ debug: false, yoloMode: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: null });
+    setExtensionConfig({ debug: false, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: null });
     await processForwardedPermissionRequests(
       createMockContext(baseDir, promptsUnlimited, { hasUI: true, selectResponse: "Allow Once" }) as never,
       { preserveLocation: true },

@@ -10,14 +10,16 @@ The fork adds shell analysis, protected-path checks, and background-command enfo
 
 | Introduced | Differences from upstream |
 |---|---|
-| May 21, 2026 | Initial per-command pipeline checks, later replaced by the July shell parser. A special approval path for file-tool paths ending in `.env`; its policy exceptions are documented below. |
+| May 21, 2026 | Initial per-command pipeline checks, later replaced by the July shell parser. A special approval path for file-tool paths ending in `.env`, replaced by shared protected-path enforcement in Unreleased. |
 | June 13–July 10, 2026 | Node.js 24 requirement, completed tsx test migration, artifact-validation fixes, CI, desktop notifications with terminal/tmux focus tracking, and formatting configuration. |
 | July 22, 2026 | Grammar-based shell decomposition, normalized argument-prefix rules, protected paths, an argument-aware safe-command registry, write-redirection checks, configurable shell-syntax policy, and eligible per-command-family session approvals. Runtime YOLO toggles stopped syncing between separate Pi processes. Added working/thinking-time displays and automated code review. |
 | August–September 2026, Unreleased | Revised denial messages, expanded policy documentation, terminal-sized permission dialogs, in-process subagent forwarding, `bg_start` command/directory enforcement, and the session-only `/yolo` command. |
 
-The shell checks evaluate each command and redirection separately and take the most restrictive result. Protected-path denies outrank allow rules and YOLO. A safe-command registry decline can still fall through to an `allow` bash default, and static shell analysis does not sandbox the files a program can access. See [Bash Defaults](#bash-defaults) and [Threat Model](#threat-model).
+The shell checks evaluate each command and redirection separately and take the most restrictive result. Protected-path denies outrank allow rules; YOLO bypasses that guard only when `yoloBypassProtectedPaths` is enabled. A safe-command registry decline can still fall through to an `allow` bash default, and static shell analysis does not sandbox the files a program can access. See [Bash Defaults](#bash-defaults) and [Threat Model](#threat-model).
 
 Current Unreleased changes:
+
+- Added `yoloBypassProtectedPaths` (default `false`). Protected file paths now deny like bash; enabling this option with YOLO bypasses the shared protected-path guard for both. Explicit policy denies still apply.
 
 - Removed the extension-local `config.json`. Settings and global permission rules now share `~/.pi/agent/pi-permissions.jsonc`. There is no migration or fallback to the removed file. Missing settings use defaults.
 - Added **Subagent prompt timeout** to `/permission-system`. The default is **600 seconds (10 minutes)**. Set `"forwardedPromptTimeoutSeconds": null` in the global permission file, or choose **off** in the modal, for no limit.
@@ -37,9 +39,9 @@ Other optional settings default to `enabled: true`, `debug: false`, `yoloMode: f
 
 #### File-tool policy exceptions
 
-Tool filtering still determines which tools the agent can see. For calls that reach the runtime hook, the fork has a special `.env` approval path for `read`, `write`, `edit`, `find`, `grep`, and `ls` when their explicit path ends in the case-sensitive suffix `.env`. Both `.env` and `production.env` match. It runs after the external-directory check and before normal tool/path policy evaluation. Approval, including YOLO auto-approval, permits the call without applying those normal rules, so a configured tool/path deny can be bypassed here. `.env.local` and `.ENV` do not match. A directory component named `.env` alone does not trigger the check; `.env/child` does not match, but `.env/child.env` does.
+Tool filtering still determines which tools the agent can see. Protected-path checks apply to `read`, `write`, `edit`, `find`, `grep`, and `ls`, as well as `bash` and `bg_start`. File tools use the same built-in and configured patterns as bash, including `.env`, `.env.local`, `production.env`, SSH keys, and credential directories. A match denies the call, even with YOLO enabled, unless `yoloBypassProtectedPaths` is also enabled. The former `.env` approval path no longer skips normal file rules.
 
-Recognized skill-file reads take a separate skill approval path before external-directory and normal read policy checks. Their outcome comes from the skill policy, approval of the current request (including YOLO auto-approval), or an explicit user `/skill:<name>` request; they do not also apply ordinary `tools.read` or `external_directory` rules. Neither exception branch saves a reusable session approval when `Allow Always` is selected. See [skills](#skills).
+Recognized skill-file reads still take a separate skill approval path after protected-path enforcement and before external-directory and normal read policy checks. Their outcome comes from the skill policy, approval of the current request (including YOLO auto-approval), or an explicit user `/skill:<name>` request; they do not also apply ordinary `tools.read` or `external_directory` rules. This branch does not save a reusable session approval when `Allow Always` is selected. See [skills](#skills).
 
 The remaining sections document this fork's current behavior.
 
@@ -197,7 +199,7 @@ If you are coming from OpenCode, you usually do **not** need to rewrite your who
 - **Runtime Enforcement** — Blocks/asks/allows at tool call time with UI confirmation dialogs and readable approval summaries
 - **Bash Command Decomposition** — Every bash invocation is parsed with the canonical bash grammar (mvdan-sh) and decomposed into the commands it actually executes (including inside `$(...)`, backticks, `bash -c` strings, and wrappers like `timeout`/`env`/`xargs`) and the files it reads and writes; each piece is evaluated on its own, so pipes and `&&` chains of allowed commands never prompt
 - **Safe-Command Registry** — Read-only commands (`rg`, `cat`, `git log`, ...) are allowed out of the box by a declarative, overridable registry, so most agent traffic needs zero config; unsafe forms (`fd -x`, `sed -i`, `rg --pre`) lose registry approval and use the prefix-rule checks or effective bash default
-- **Protected Paths** — Secrets like `.env`, `.ssh/`, and `id_rsa*` are denied to every bash command by default — including via input redirection and `git show HEAD:.env` — outranking every allow rule
+- **Protected Paths** — Secrets like `.env`, `.ssh/`, and `id_rsa*` are denied to file tools and shell commands by default — including via input redirection and `git show HEAD:.env` — outranking every allow rule
 - **Session Family Approvals** — Local bash approval prompts summarize up to four blocking pieces plus an omitted count and offer `Allow for this session: <families>` when eligible; approved families silence matching pieces of later compounds while everything else still gets checked
 - **MCP Access Control** — Server and tool-level permissions for MCP operations
 - **Skill Protection** — Controls which skills can be loaded or read from disk, including multi-block prompt sanitization and path-inferred reads under Pi skill directories
@@ -309,6 +311,7 @@ All settings are optional. Missing keys use the defaults below; permission rules
   "enabled": true,
   "debug": false,
   "yoloMode": false,
+  "yoloBypassProtectedPaths": false,
   "desktopNotifications": true,
   "forwardedPromptTimeoutSeconds": 600
 }
@@ -319,6 +322,7 @@ All settings are optional. Missing keys use the defaults below; permission rules
 | `enabled` | `true` | Master switch. When `false`, the extension skips all registrations and startup work (permission hooks, commands, runtime API, forwarding). |
 | `debug` | `false` | Enables verbose diagnostics and permission review entries in `logs/pi-permission-system-debug.jsonl` |
 | `yoloMode` | `false` | Startup default for yolo mode in new sessions. Runtime toggles (settings modal or runtime API) are session-scoped: they are never written back to this file and never propagate to other running sessions |
+| `yoloBypassProtectedPaths` | `false` | With YOLO on, bypass the protected-path guard for file tools, bash, and background commands. Explicit denies remain enforced. |
 | `desktopNotifications` | `true` | Sends a native desktop notification when a permission prompt is waiting and this terminal tab is not focused |
 | `forwardedPromptTimeoutSeconds` | `600` | Countdown in seconds before an unanswered subagent prompt is denied. A positive number enables it; `null` disables it. Change it in the settings modal under **Subagent prompt timeout**. |
 
@@ -379,6 +383,16 @@ errs on the side of notifying.
 ### Runtime YOLO Control
 
 Use `/yolo` to toggle YOLO mode on or off for the current session. The command reports the new state and updates the status bar. Use `/permission-system` to open the settings modal and inspect or change yolo mode interactively. In interactive TUI mode, the settings modal uses Pi's renderer-provided theme and does not require a separate global `initTheme()` call before opening.
+
+To let YOLO access protected paths through both file and shell tools, set this top-level field in `~/.pi/agent/pi-permissions.jsonc`:
+
+```jsonc
+{
+  "yoloBypassProtectedPaths": true
+}
+```
+
+Then enable YOLO with `/yolo`. The same setting is available as **YOLO bypasses protected paths** in `/permission-system` and is saved to the global file. With the setting off, protected paths deny rather than prompt. With YOLO off, the setting has no effect. This bypass covers built-in patterns and additions in `protectedPaths`; command, file, external-directory, and shell-syntax deny rules remain enforced. It does not enable a tool hidden by policy.
 
 Other extensions can toggle yolo mode immediately through the shared runtime API:
 
@@ -528,7 +542,7 @@ Path-bearing built-ins (`read`, `write`, `edit`, `find`, `grep`, `ls`) can also 
 }
 ```
 
-Action-scoped resource rules use the same wildcard/last-match behavior as other tool rules. Ordinary outside-worktree file calls must also satisfy `special.external_directory`. The [file-tool exceptions](#file-tool-policy-exceptions) for recognized skills and `.env` suffixes run before normal tool/path evaluation.
+Action-scoped resource rules use the same wildcard/last-match behavior as other tool rules. Ordinary outside-worktree file calls must also satisfy `special.external_directory`. Recognized skill reads use the separate [skill policy path](#file-tool-policy-exceptions), after protected-path enforcement.
 
 > **Note:** At command-evaluation time, `tools.bash` supplies a fallback after prefix rules, the registry, and protected paths. Tool exposure is checked earlier: if the matching `tools.bash` rule or effective `defaultPolicy.bash` is `deny`, Pi removes `bash` from the active tools. Command-prefix and registry allowances do not restore that tool.
 >
@@ -641,13 +655,15 @@ Notes:
 
 ### `protectedPaths`
 
-Certain paths are secrets and are **denied to every bash command by default**, outranking every allow including the registry — covering plain arguments, input redirections (`tr x y < .env`), and repo-path forms (`git show HEAD:.env`). Patterns are globs matched against every argv token and redirection target, whole or per `/`- and `:`-segment. The built-in list (see [Defaults](#bash-defaults)) covers `.env` variants, `.ssh`/`.aws`/`.gnupg`/`.kube`/`.docker`, ssh keys, `*.pem`-style key files, shell history, and credential files. The top-level `protectedPaths` array appends to it:
+Protected paths are **denied to file tools and shell commands by default**. YOLO skips this guard only when `yoloBypassProtectedPaths` is enabled. For shell commands the guard outranks allow rules and the registry — covering plain arguments, input redirections (`tr x y < .env`), and repo-path forms (`git show HEAD:.env`). Patterns are globs matched against every argv token and redirection target, whole or per `/`- and `:`-segment. The built-in list (see [Defaults](#bash-defaults)) covers `.env` variants, `.ssh`/`.aws`/`.gnupg`/`.kube`/`.docker`, ssh keys, `*.pem`-style key files, shell history, and credential files. The top-level `protectedPaths` array appends to it:
 
 ```jsonc
 {
   "protectedPaths": ["*.secret", "vault-*"]
 }
 ```
+
+File tools check both the original path and its absolute and session-relative forms, so a custom pattern such as `secrets/*` covers relative and absolute requests within the session directory. `grep.glob` and `find.pattern` are checked as filename selectors, including relative to their search directory; `grep.pattern` is a content query. Selectors such as `.env*` also use the shell guard’s check of the text remaining after glob operators are removed; this does not expand globs or enumerate files. These checks inspect explicit paths and selectors, not the files returned by a broad search, and do not filter protected files from search results.
 
 Protected-path checks also see the **literal fragments** of arguments and redirect targets that contain expansions, so `cat "$HOME/.env"` and `tr x y < "$DIR/.env"` are denied even though the full path cannot be resolved statically. The residual limitation: a variable whose *entire value* names a protected file (`FILE=.env; cat $FILE`) cannot be caught without runtime dataflow — protected paths are a tripwire against accidental and casual access, not a sandbox. (Restricted registry rows already refuse to vouch for any invocation carrying expansions, and unknown commands with expansions use matching prefix rules, then the effective bash default, normally `ask`.)
 
@@ -979,7 +995,7 @@ The extension uses a modular architecture with shared utilities:
 - Unapproved ordinary path-bearing file calls outside the working directory when `external_directory` is `ask` or `deny`; recognized skill reads take a separate approval path
 
 **Limitations:**
-- Recognized skill reads and approved `.env` suffix calls skip normal file-tool policy checks as described under [file-tool exceptions](#file-tool-policy-exceptions).
+- Recognized skill reads skip normal file-tool policy checks after protected-path enforcement as described under [file-tool exceptions](#file-tool-policy-exceptions).
 - If a dangerous action is possible via an allowed tool, policy must explicitly restrict it
 - This is a permission decision layer, not a sandbox
 
