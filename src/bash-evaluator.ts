@@ -2,6 +2,7 @@ import {
   OPAQUE_EXECUTABLES,
   SUBCOMMAND_STRUCTURED_FAMILIES,
   WRAPPER_EXECUTABLES,
+  matchProtectedPathToken,
   registryVouchesFor,
   type CompiledRegistry,
   type ProtectedPathMatcher,
@@ -28,7 +29,6 @@ import type { BashBlockingPiece, BashEvaluation, PermissionState } from "./types
  */
 
 const PLAIN_EXECUTABLE_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
-const GLOB_CHARS_PATTERN = /[*?[\]]/;
 
 export interface BashSyntaxPolicy {
   subshells: PermissionState;
@@ -81,22 +81,6 @@ function findPrefixMatch(rules: readonly string[][], argv: readonly (string | nu
   return null;
 }
 
-function matchProtectedToken(token: string, matcher: ProtectedPathMatcher): string | null {
-  const direct = matcher.matches(token);
-  if (direct) {
-    return direct;
-  }
-  // A glob argument like `.env*` expands to files we cannot enumerate; test
-  // the pattern with its glob characters removed so `.env*` still hits `.env`.
-  if (GLOB_CHARS_PATTERN.test(token)) {
-    const stripped = token.replace(/[*?]|\[[^\]]*\]/g, "");
-    if (stripped && stripped !== token) {
-      return matcher.matches(stripped);
-    }
-  }
-  return null;
-}
-
 function isSubcommandStructured(executable: string, registry: CompiledRegistry): boolean {
   if (SUBCOMMAND_STRUCTURED_FAMILIES.has(executable)) {
     return true;
@@ -137,7 +121,7 @@ function evaluateCommandPiece(command: ExecutedCommand, context: BashEvaluationC
   for (let index = 0; index < command.argv.length; index += 1) {
     const token = command.argv[index];
     if (token !== null) {
-      const protectedHit = matchProtectedToken(token, context.protectedPaths);
+      const protectedHit = matchProtectedPathToken(token, context.protectedPaths);
       if (protectedHit) {
         return { state: "deny", reason: `touches protected path ('${token}' matches '${protectedHit}')` };
       }
@@ -146,7 +130,7 @@ function evaluateCommandPiece(command: ExecutedCommand, context: BashEvaluationC
     // Words with expansions still expose their literal fragments, so a
     // variable prefix cannot smuggle a protected path ("$HOME/.env").
     for (const fragment of command.argvFragments[index] ?? []) {
-      const protectedHit = matchProtectedToken(fragment, context.protectedPaths);
+      const protectedHit = matchProtectedPathToken(fragment, context.protectedPaths);
       if (protectedHit) {
         return { state: "deny", reason: `touches protected path ('${fragment}' matches '${protectedHit}')` };
       }
@@ -238,13 +222,13 @@ export function evaluateBashCommand(command: string, context: BashEvaluationCont
 
   const matchEffectProtected = (effect: { target: string | null; fragments: string[] }): { token: string; pattern: string } | null => {
     if (effect.target !== null) {
-      const hit = matchProtectedToken(effect.target, context.protectedPaths);
+      const hit = matchProtectedPathToken(effect.target, context.protectedPaths);
       return hit ? { token: effect.target, pattern: hit } : null;
     }
     // Expanded targets already fail closed to ask; literal fragments can
     // still upgrade them to deny ("< $HOME/.env").
     for (const fragment of effect.fragments) {
-      const hit = matchProtectedToken(fragment, context.protectedPaths);
+      const hit = matchProtectedPathToken(fragment, context.protectedPaths);
       if (hit) {
         return { token: fragment, pattern: hit };
       }

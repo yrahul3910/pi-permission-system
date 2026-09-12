@@ -24,6 +24,7 @@ import { formatJsoncConfigLoadWarning, parseJsoncConfig } from "./jsonc-config.j
 import {
   compileRegistry,
   createProtectedPathMatcher,
+  matchProtectedPathToken,
   type CompiledRegistry,
   type ProtectedPathMatcher,
 } from "./safe-commands.js";
@@ -1211,7 +1212,7 @@ export class PermissionManager {
         relative(cwd, absolutePath).replaceAll("\\", "/"),
       ];
       for (const target of forms) {
-        const pattern = matcher.matches(target);
+        const pattern = matchProtectedPathToken(target, matcher);
         if (pattern) {
           return {
             toolName,

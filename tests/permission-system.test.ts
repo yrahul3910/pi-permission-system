@@ -938,11 +938,15 @@ runTest(
     try {
       const cases = [
         { toolName: "grep", input: { pattern: "secret", glob: ".env" } },
+        { toolName: "grep", input: { pattern: "secret", glob: ".env*" } },
+        { toolName: "grep", input: { pattern: "secret", glob: "**/.env*" } },
         {
           toolName: "grep",
           input: { pattern: "secret", glob: "**/.env.local" },
         },
         { toolName: "find", input: { pattern: ".env" } },
+        { toolName: "find", input: { pattern: ".env*" } },
+        { toolName: "find", input: { pattern: "**/.ssh*" } },
         { toolName: "find", input: { pattern: "**/.ssh/*" } },
         { toolName: "read", input: { path: "secrets/key.json" } },
         { toolName: "read", input: { path: "/workspace/secrets/key.json" } },
