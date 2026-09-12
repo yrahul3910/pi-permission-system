@@ -309,3 +309,43 @@ for (const selection of ["Reject", undefined]) {
     },
   );
 }
+
+await runAsyncTest(
+  "a queue timer cannot expire a request before its wall-clock deadline",
+  async () => {
+    const dialog = createDialogUi();
+    const originalNow = Date.now;
+    let now = originalNow();
+    Date.now = () => now;
+    try {
+      const local = requestPermissionDecisionFromUi(dialog.ui, "Local", "read");
+      let expired = false;
+      const timed = requestPermissionDecisionFromUi(
+        dialog.ui,
+        "Timed",
+        "find",
+        {
+          expiresAt: now + 20,
+        },
+      ).then((decision) => {
+        expired = true;
+        return decision;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      assert.equal(
+        expired,
+        false,
+        "a timer wakeup alone does not establish expiry",
+      );
+      now += 20;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      assert.equal(expired, true);
+      assert.deepEqual(await timed, { approved: false, state: "reject" });
+      dialog.answer("Allow Once");
+      await local;
+      assert.deepEqual(dialog.shown, ["Local\nread"]);
+    } finally {
+      Date.now = originalNow;
+    }
+  },
+);

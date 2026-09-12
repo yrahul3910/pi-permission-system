@@ -1526,6 +1526,8 @@ async function waitForForwardedPermissionApproval(
     responsePath,
   });
   safeDeleteFile(requestPath, "forwarded permission request");
+  // A response published just before the deadline may still be unread.
+  safeDeleteFile(responsePath, "forwarded permission response");
   cleanupPermissionForwardingLocationIfEmpty(location);
   return { approved: false, state: "denied" };
 }
@@ -1751,6 +1753,13 @@ export async function processForwardedPermissionRequests(
         responderSessionId: currentSessionId,
         respondedAt: Date.now(),
       } satisfies ForwardedPermissionResponse);
+      // Publishing the file can cross the deadline or race the child's cleanup.
+      if (Date.now() >= expiresAt || !existsSync(requestPath)) {
+        safeDeleteFile(
+          responsePath,
+          `${location.label} forwarded permission response`,
+        );
+      }
     } catch (error) {
       logPermissionForwardingError(
         `Failed to write ${location.label} forwarded permission response '${responsePath}'`,

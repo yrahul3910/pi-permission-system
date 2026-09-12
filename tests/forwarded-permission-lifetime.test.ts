@@ -235,3 +235,31 @@ for (const configuredTimeout of [null, 30]) {
     },
   );
 }
+
+await runAsyncTest(
+  "a response published after the deadline is removed",
+  async () => {
+    const test = createForwardingCase();
+    const originalNow = Date.now;
+    const startedAt = originalNow();
+    // Advance the clock as soon as the real atomic write publishes the response.
+    Date.now = () =>
+      existsSync(test.responsePath) ? startedAt + 2_000 : startedAt;
+    try {
+      setExtensionConfig({
+        ...DEFAULT_EXTENSION_CONFIG,
+        desktopNotifications: false,
+      });
+      test.writeRequest(1_000);
+      test.context.ui.select = async () => "Allow Once";
+      await processForwardedPermissionRequests(test.context, {
+        preserveLocation: true,
+      });
+      assert.equal(existsSync(test.responsePath), false);
+      assert.equal(existsSync(test.requestPath), false);
+    } finally {
+      Date.now = originalNow;
+      test.cleanup();
+    }
+  },
+);

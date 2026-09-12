@@ -309,10 +309,16 @@ export async function requestPermissionDecisionFromUi(
         isReady = await Promise.race([
           previous.then(() => true),
           new Promise<boolean>((resolve) => {
-            queueTimer = setTimeout(
-              () => resolve(false),
-              Math.max(0, deadline - Date.now()),
-            );
+            const expire = (): void => {
+              const remainingMs = deadline - Date.now();
+              if (remainingMs > 0) {
+                // Timer wakeups and Date.now() need not advance in lockstep.
+                queueTimer = setTimeout(expire, remainingMs);
+              } else {
+                resolve(false);
+              }
+            };
+            expire();
           }),
         ]);
       }
