@@ -891,6 +891,8 @@ When a delegated or routed subagent runs without direct UI access, `ask` permiss
 
 This keeps `ask` policies usable even when the original permission check happens inside a non-UI execution context.
 
+Local and forwarded prompts share a queue for each UI context. A selector and its optional rejection-reason input finish before the next dialog opens. Finite requests can expire while queued; late responses and responses to withdrawn requests are discarded.
+
 The timeout covers the entire forwarded request, including time waiting for the parent to display it. With the timeout off (`"forwardedPromptTimeoutSeconds": null`), the request waits until answered. A request keeps the deadline selected when it was created; setting changes apply to new requests. YOLO in the receiving parent auto-approves forwarded `ask` requests without showing a countdown. YOLO does not override a `deny` returned by policy evaluation; the [file-tool exceptions](#file-tool-policy-exceptions) can skip normal tool/path evaluation. Each in-process session owns its YOLO state, so starting a child cannot reset the parent.
 
 ### Logging

@@ -4012,8 +4012,8 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
     );
 
     assert.ok(
-      promptsUnlimited.some((p) => p.includes("indefinitely")),
-      `Expected prompt to include "indefinitely", got: ${promptsUnlimited.join("\n")}`,
+      promptsUnlimited.some((p) => p.includes("wait indefinitely")),
+      `Expected prompt to explain the unlimited wait, got: ${promptsUnlimited.join("\n")}`,
     );
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -4059,15 +4059,16 @@ await runAsyncTest(
         await processForwardedPermissionRequests(ctx, {
           preserveLocation: true,
         });
-        const response = readFileSync(
-          join(location.responsesDir, `${id}.json`),
-          "utf8",
-        );
+        const responsePath = join(location.responsesDir, `${id}.json`);
         if (expired) {
           assert.deepEqual(prompts, []);
-          assert.match(response, /"approved":false/);
-          assert.match(response, /expired before it could be displayed/);
+          assert.equal(existsSync(responsePath), false);
+          assert.equal(
+            existsSync(join(location.requestsDir, `${id}.json`)),
+            false,
+          );
         } else {
+          const response = readFileSync(responsePath, "utf8");
           assert.ok(
             prompts.some((prompt) => prompt.includes("60 seconds remaining")),
           );

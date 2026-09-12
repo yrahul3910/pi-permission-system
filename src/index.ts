@@ -219,8 +219,6 @@ type ThoughtDurationTheme = {
 const PERMISSION_REQUEST_EVENT_CHANNEL =
   "pi-permission-system:permission-request";
 export const THOUGHT_DURATION_ENTRY_TYPE = `${EXTENSION_ID}:thought-duration`;
-const DEFAULT_FORWARDED_PERMISSION_PROMPT_TIMEOUT_REASON =
-  "permission_timeout: forwarded permission prompt was not answered within the configured timeout.";
 const PATH_BEARING_TOOLS = new Set([
   "read",
   "write",
@@ -1541,6 +1539,8 @@ async function waitForForwardedPermissionApproval(
     responsePath,
   });
   safeDeleteFile(requestPath, "forwarded permission request");
+  // A response published just before the deadline may still be unread.
+  safeDeleteFile(responsePath, "forwarded permission response");
   cleanupPermissionForwardingLocationIfEmpty(location);
   return { approved: false, state: "denied" };
 }
@@ -1652,6 +1652,7 @@ export async function processForwardedPermissionRequests(
     };
 
     const config = options.getConfig?.() ?? extensionConfig;
+    const expiresAt = request.expiresAt ?? Number.POSITIVE_INFINITY;
     const requestAgeMs = Date.now() - request.createdAt;
     const requestTimeoutMs =
       request.expiresAt === null
@@ -1667,12 +1668,11 @@ export async function processForwardedPermissionRequests(
         requestAgeMs,
         timeoutMs: requestTimeoutMs,
       });
-      decision = {
-        approved: false,
-        state: "denied",
-        denialReason:
-          "permission_timeout: forwarded permission request expired before it could be displayed.",
-      };
+      safeDeleteFile(
+        requestPath,
+        `${location.label} forwarded permission request`,
+      );
+      continue;
     } else if (shouldAutoApprovePermissionState("ask", config)) {
       writeReviewEntry(
         "forwarded_permission.auto_approved",
@@ -1724,14 +1724,11 @@ export async function processForwardedPermissionRequests(
             [formatForwardedPermissionPrompt(request), "", promptMessage].join(
               "\n",
             ),
-            timeoutMs !== undefined
-              ? {
-                  timeoutMs,
-                  timeoutDenialReason:
-                    timeoutDenialReason ??
-                    DEFAULT_FORWARDED_PERMISSION_PROMPT_TIMEOUT_REASON,
-                }
-              : {},
+            {
+              timeoutMs,
+              expiresAt: request.expiresAt ?? undefined,
+              timeoutDenialReason,
+            },
           );
         decision = await (options.turnRuntime?.pauseWhile(requestDecision) ??
           requestDecision());
@@ -1742,6 +1739,21 @@ export async function processForwardedPermissionRequests(
         );
         decision = { approved: false, state: "denied" };
       }
+    }
+
+    // The child may have timed out or removed its request while the dialog was
+    // queued or visible. It can no longer consume a response in either case.
+    if (Date.now() >= expiresAt || !existsSync(requestPath)) {
+      writeReviewEntry("forwarded_permission.expired", {
+        ...forwardedPermissionLogDetails,
+        requestAgeMs: Date.now() - request.createdAt,
+        timeoutMs: requestTimeoutMs,
+      });
+      safeDeleteFile(
+        requestPath,
+        `${location.label} forwarded permission request`,
+      );
+      continue;
     }
 
     writeReviewEntry(
@@ -1765,6 +1777,13 @@ export async function processForwardedPermissionRequests(
         responderSessionId: currentSessionId,
         respondedAt: Date.now(),
       } satisfies ForwardedPermissionResponse);
+      // Publishing the file can cross the deadline or race the child's cleanup.
+      if (Date.now() >= expiresAt || !existsSync(requestPath)) {
+        safeDeleteFile(
+          responsePath,
+          `${location.label} forwarded permission response`,
+        );
+      }
     } catch (error) {
       logPermissionForwardingError(
         `Failed to write ${location.label} forwarded permission response '${responsePath}'`,
