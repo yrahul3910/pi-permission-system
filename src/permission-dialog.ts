@@ -408,5 +408,5 @@ async function selectPermissionDecision(
     return createRejectDecision(denialReason);
   }
 
-  return createRejectDecision(options.timeoutDenialReason);
+  return createRejectDecision();
 }

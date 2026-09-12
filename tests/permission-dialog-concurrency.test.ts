@@ -288,3 +288,24 @@ await runAsyncTest(
     assert.deepEqual(dialog.shown, []);
   },
 );
+
+for (const selection of ["Reject", undefined]) {
+  await runAsyncTest(
+    `manual rejection ${selection ?? "Escape"} is not reported as expiry`,
+    async () => {
+      const dialog = createDialogUi();
+      const decision = requestPermissionDecisionFromUi(
+        dialog.ui,
+        "Forwarded",
+        "find",
+        {
+          expiresAt: Date.now() + 60_000,
+          timeoutDenialReason:
+            "permission_timeout: forwarded permission request expired.",
+        },
+      );
+      dialog.answer(selection);
+      assert.deepEqual(await decision, { approved: false, state: "reject" });
+    },
+  );
+}

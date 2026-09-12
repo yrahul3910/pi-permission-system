@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -206,3 +207,31 @@ await runAsyncTest(
     }
   },
 );
+
+for (const configuredTimeout of [null, 30]) {
+  await runAsyncTest(
+    `a manual forwarded rejection with timeout ${configuredTimeout} has no expiry reason`,
+    async () => {
+      const test = createForwardingCase();
+      try {
+        setExtensionConfig({
+          ...DEFAULT_EXTENSION_CONFIG,
+          desktopNotifications: false,
+          forwardedPromptTimeoutSeconds: configuredTimeout,
+        });
+        test.writeRequest(PERMISSION_FORWARDING_TIMEOUT_MS);
+        test.context.ui.select = async () => "Reject";
+        await processForwardedPermissionRequests(test.context, {
+          preserveLocation: true,
+        });
+        const response = readFileSync(test.responsePath, "utf8");
+        assert.match(response, /"approved":\s*false/);
+        assert.match(response, /"state":\s*"reject"/);
+        assert.doesNotMatch(response, /"denialReason"/);
+        assert.equal(existsSync(test.requestPath), false);
+      } finally {
+        test.cleanup();
+      }
+    },
+  );
+}
