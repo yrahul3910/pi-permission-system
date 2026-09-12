@@ -2052,7 +2052,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       const result = setYoloModeFromRuntimeApi(!extensionConfig.yoloMode, {
         source: "yolo-command",
       });
-      ctx.ui.notify(`YOLO mode ${result.yoloMode ? "on" : "off"}.`, "info");
+      if (ctx.hasUI) {
+        ctx.ui.notify(`YOLO mode ${result.yoloMode ? "on" : "off"}.`, "info");
+      }
     },
   });
 
