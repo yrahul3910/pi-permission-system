@@ -14,12 +14,18 @@ export interface PermissionDecisionUiSelectOptions {
 
 export interface PermissionDecisionUi {
   select(title: string, options: string[], optionsOverride?: PermissionDecisionUiSelectOptions): Promise<string | undefined>;
-  input(title: string, placeholder?: string): Promise<string | undefined>;
+  input(
+    title: string,
+    placeholder?: string,
+    optionsOverride?: PermissionDecisionUiSelectOptions,
+  ): Promise<string | undefined>;
 }
 
 export type PermissionDecisionRequestOptions = {
-  /** Time budget for waiting in the queue and answering the selector. */
+  /** Time budget for waiting in the queue and answering the dialog. */
   timeoutMs?: number;
+  /** Absolute request expiration, in milliseconds since the Unix epoch. */
+  expiresAt?: number;
   timeoutDenialReason?: string;
   /**
    * Command family prefixes (e.g. ["wc", "git push"]) for a bash prompt.
@@ -257,18 +263,28 @@ const pendingPermissionDialogs = new WeakMap<
   Promise<void>
 >();
 
+function createRejectDecision(denialReason?: string): PermissionPromptDecision {
+  return denialReason
+    ? { approved: false, state: "reject", denialReason }
+    : { approved: false, state: "reject" };
+}
+
 export async function requestPermissionDecisionFromUi(
   ui: PermissionDecisionUi,
   title: string,
   message: string,
   options: PermissionDecisionRequestOptions = {},
 ): Promise<PermissionPromptDecision> {
-  const deadline =
+  const promptDeadline =
     options.timeoutMs !== undefined &&
     Number.isFinite(options.timeoutMs) &&
     options.timeoutMs > 0
       ? Date.now() + options.timeoutMs
       : undefined;
+  const deadline =
+    options.expiresAt === undefined
+      ? promptDeadline
+      : Math.min(options.expiresAt, promptDeadline ?? Infinity);
   const previous = pendingPermissionDialogs.get(ui);
   let release = () => {};
   const completed = new Promise<void>((resolve) => {
@@ -305,17 +321,12 @@ export async function requestPermissionDecisionFromUi(
     const remainingMs =
       deadline === undefined ? undefined : deadline - Date.now();
     if (!isReady || (remainingMs !== undefined && remainingMs <= 0)) {
-      return options.timeoutDenialReason
-        ? {
-            approved: false,
-            state: "reject",
-            denialReason: options.timeoutDenialReason,
-          }
-        : { approved: false, state: "reject" };
+      return createRejectDecision(options.timeoutDenialReason);
     }
     return await selectPermissionDecision(ui, title, message, {
       ...options,
       timeoutMs: remainingMs,
+      expiresAt: deadline,
     });
   } finally {
     clearTimeout(queueTimer);
@@ -350,6 +361,9 @@ async function selectPermissionDecision(
     decisionOptions,
     selectOptions,
   );
+  if (options.expiresAt !== undefined && Date.now() >= options.expiresAt) {
+    return createRejectDecision(options.timeoutDenialReason);
+  }
 
   if (selected === APPROVE_ONCE_OPTION) {
     return {
@@ -373,19 +387,26 @@ async function selectPermissionDecision(
   }
 
   if (selected === REJECT_WITH_REASON_OPTION) {
+    const remainingMs =
+      options.expiresAt === undefined
+        ? undefined
+        : options.expiresAt - Date.now();
+    if (remainingMs !== undefined && remainingMs <= 0) {
+      return createRejectDecision(options.timeoutDenialReason);
+    }
     const denialReason = normalizePermissionDenialReason(
       await ui.input(
         `${title}\nShare why this request was denied (optional).`,
         "Reason shown back to the agent",
+        remainingMs === undefined ? undefined : { timeout: remainingMs },
       ),
     );
+    if (options.expiresAt !== undefined && Date.now() >= options.expiresAt) {
+      return createRejectDecision(options.timeoutDenialReason);
+    }
 
-    return denialReason
-      ? { approved: false, state: "reject", denialReason }
-      : { approved: false, state: "reject" };
+    return createRejectDecision(denialReason);
   }
 
-  return options.timeoutDenialReason
-    ? { approved: false, state: "reject", denialReason: options.timeoutDenialReason }
-    : { approved: false, state: "reject" };
+  return createRejectDecision(options.timeoutDenialReason);
 }

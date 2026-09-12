@@ -3933,8 +3933,8 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
     );
 
     assert.ok(
-      promptsUnlimited.some((p) => p.includes("indefinitely")),
-      `Expected prompt to include "indefinitely", got: ${promptsUnlimited.join("\n")}`,
+      promptsUnlimited.some((p) => p.includes("subagent request expires")),
+      `Expected prompt to explain the subagent request expiry, got: ${promptsUnlimited.join("\n")}`,
     );
   } finally {
     rmSync(baseDir, { recursive: true, force: true });

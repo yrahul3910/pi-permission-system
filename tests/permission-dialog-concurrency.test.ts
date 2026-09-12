@@ -228,3 +228,63 @@ await runAsyncTest(
     }
   },
 );
+
+await runAsyncTest(
+  "a rejection reason uses only the request's remaining lifetime",
+  async () => {
+    const originalNow = Date.now;
+    let now = originalNow();
+    Date.now = () => now;
+    const expiresAt = now + 100;
+    const timeouts: Array<number | undefined> = [];
+    const ui: PermissionDecisionUi = {
+      select: async (_title, _choices, options) => {
+        timeouts.push(options?.timeout);
+        now += 25;
+        return "Reject with Reason";
+      },
+      input: async (_title, _placeholder, options) => {
+        timeouts.push(options?.timeout);
+        return "Wrong file";
+      },
+    };
+    try {
+      const decision = await requestPermissionDecisionFromUi(
+        ui,
+        "Forwarded",
+        "write",
+        { expiresAt },
+      );
+      assert.deepEqual(timeouts, [100, 75]);
+      assert.deepEqual(decision, {
+        approved: false,
+        state: "reject",
+        denialReason: "Wrong file",
+      });
+    } finally {
+      Date.now = originalNow;
+    }
+  },
+);
+
+await runAsyncTest(
+  "an already expired request never opens a dialog",
+  async () => {
+    const dialog = createDialogUi();
+    const decision = await requestPermissionDecisionFromUi(
+      dialog.ui,
+      "Expired",
+      "find",
+      {
+        expiresAt: Date.now() - 1,
+        timeoutDenialReason: "request expired",
+      },
+    );
+    assert.deepEqual(decision, {
+      approved: false,
+      state: "reject",
+      denialReason: "request expired",
+    });
+    assert.deepEqual(dialog.shown, []);
+  },
+);
