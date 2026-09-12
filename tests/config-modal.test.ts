@@ -71,7 +71,7 @@ function registerForTest(config: PermissionSystemExtensionConfig): RegisteredCom
       setConfig: (next: PermissionSystemExtensionConfig) => {
         config = next;
       },
-      getConfigPath: () => "C:/tmp/pi-permission-system/config.json",
+      getConfigPath: () => "C:/tmp/pi-permission-system/pi-permissions.jsonc",
     } as never,
   );
 

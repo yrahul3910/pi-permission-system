@@ -6,4 +6,4 @@ coverage/
 logs/
 *.tmp
 docs/
-config.json
+pi-permissions.jsonc

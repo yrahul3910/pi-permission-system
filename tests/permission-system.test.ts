@@ -43,6 +43,7 @@ import {
   findSkillPathMatch,
 } from "../src/skill-prompt-sanitizer.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "../src/tool-registry.js";
+import { getPiPermissionSystemRuntimeApi } from "../src/yolo-mode-api.js";
 import { getPermissionSystemStatus } from "../src/status.js";
 import { sanitizeAvailableToolsSection } from "../src/system-prompt-sanitizer.js";
 import type { AgentPermissions, GlobalPermissionConfig } from "../src/types.js";
@@ -200,7 +201,7 @@ function createToolCallHarness(
   const registeredCommands = new Map<string, RegisteredCommandDefinition>();
   const entryRendererTypes: string[] = [];
   const appendedEntries: AppendedEntry[] = [];
-  const extensionConfigPath = join(baseDir, "extension-config.json");
+  const extensionConfigPath = join(baseDir, "pi-permissions.jsonc");
   const logsDir = join(baseDir, "extension-logs");
   const debugPath = join(logsDir, "pi-permission-system-debug.jsonl");
   const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -209,10 +210,9 @@ function createToolCallHarness(
 
   mkdirSync(join(baseDir, "agents"), { recursive: true });
   mkdirSync(cwd, { recursive: true });
-  writeFileSync(join(baseDir, "pi-permissions.jsonc"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   writeFileSync(
     extensionConfigPath,
-    `${JSON.stringify(options.extensionConfig ?? DEFAULT_EXTENSION_CONFIG, null, 2)}\n`,
+    `${JSON.stringify({ ...config, ...(options.extensionConfig ?? DEFAULT_EXTENSION_CONFIG) }, null, 2)}\n`,
     "utf8",
   );
 
@@ -419,6 +419,81 @@ await runAsyncTest("Extension inserts thought duration only before a final assis
     await harness.cleanup();
   }
 });
+
+await runAsyncTest(
+  "In-process children preserve parent YOLO and forward ask requests without prompting",
+  async () => {
+    const parent = createToolCallHarness(
+      { tools: { read: "ask", write: "deny" } },
+      ["read", "write"],
+    );
+    const previousForwardingDir =
+      process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+    process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] = parent.baseDir;
+    try {
+      await parent.handlers.session_start?.(
+        { reason: "startup" },
+        createMockContext(parent.cwd, parent.prompts, { hasUI: true }),
+      );
+      const parentApi = getPiPermissionSystemRuntimeApi();
+      assert.ok(parentApi);
+      parentApi.setYoloMode(true);
+      const child = createToolCallHarness({ tools: { read: "ask" } }, ["read"]);
+      try {
+        const childContext = {
+          ...createMockContext(child.cwd, child.prompts),
+          getSystemPrompt: () => '<active_agent name="worker"/>',
+          sessionManager: {
+            getEntries: () => [],
+            getSessionId: () => "child-session",
+            getSessionDir: () => child.cwd,
+          },
+        };
+        await child.handlers.session_start?.(
+          { reason: "startup" },
+          childContext,
+        );
+        assert.equal(parentApi.getYoloMode(), true);
+        assert.equal(getPiPermissionSystemRuntimeApi(), parentApi);
+        const result = await child.handlers.tool_call?.(
+          {
+            toolName: "read",
+            toolCallId: "child-read",
+            input: { path: join(child.cwd, "file.txt") },
+          },
+          childContext,
+        );
+        assert.equal(result?.block, undefined);
+        assert.deepEqual(parent.prompts, []);
+        assert.deepEqual(child.prompts, []);
+      } finally {
+        await child.cleanup();
+      }
+      assert.equal(getPiPermissionSystemRuntimeApi(), parentApi);
+      assert.equal(parentApi.getYoloMode(), true);
+      const denied = await runToolCall(parent, {
+        toolName: "write",
+        toolCallId: "parent-denied",
+        input: { path: join(parent.cwd, "file.txt"), content: "x" },
+      });
+      assert.equal(denied.block, true);
+      parentApi.setYoloMode(false);
+      const asked = await runToolCall(parent, {
+        toolName: "read",
+        toolCallId: "parent-ask",
+        input: { path: join(parent.cwd, "file.txt") },
+      });
+      assert.equal(asked.block, true);
+    } finally {
+      await parent.cleanup();
+      if (previousForwardingDir === undefined)
+        delete process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+      else
+        process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] =
+          previousForwardingDir;
+    }
+  },
+);
 
 await runAsyncTest("Extension exposes a runtime YOLO API for other extensions", async () => {
   const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
@@ -674,7 +749,7 @@ await runAsyncTest("Extension dedupes identical permission parse warnings across
 
 runTest("Permission-system extension config defaults debug and yolo mode off", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-"));
-  const configPath = join(baseDir, "config.json");
+  const configPath = join(baseDir, "pi-permissions.jsonc");
 
   try {
     const result = loadPermissionSystemConfig(configPath);
@@ -702,7 +777,7 @@ runTest("Permission-system extension config defaults debug and yolo mode off", (
 
 runTest("Permission-system extension config loads debug and yolo mode when explicitly enabled", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-yolo-"));
-  const configPath = join(baseDir, "config.json");
+  const configPath = join(baseDir, "pi-permissions.jsonc");
 
   try {
     writeFileSync(
@@ -722,7 +797,7 @@ runTest("Permission-system extension config loads debug and yolo mode when expli
       debug: true,
       yoloMode: true,
       desktopNotifications: true,
-      forwardedPromptTimeoutSeconds: 30,
+      forwardedPromptTimeoutSeconds: DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -731,7 +806,7 @@ runTest("Permission-system extension config loads debug and yolo mode when expli
 
 runTest("Permission-system extension config accepts JSONC comments and trailing commas", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-jsonc-"));
-  const configPath = join(baseDir, "config.json");
+  const configPath = join(baseDir, "pi-permissions.jsonc");
 
   try {
     writeFileSync(
@@ -753,7 +828,7 @@ runTest("Permission-system extension config accepts JSONC comments and trailing 
       debug: true,
       yoloMode: true,
       desktopNotifications: true,
-      forwardedPromptTimeoutSeconds: 30,
+      forwardedPromptTimeoutSeconds: DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
     });
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
@@ -762,7 +837,7 @@ runTest("Permission-system extension config accepts JSONC comments and trailing 
 
 runTest("Permission-system extension config reports one-line JSONC parse warnings", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-parse-"));
-  const configPath = join(baseDir, "config.json");
+  const configPath = join(baseDir, "pi-permissions.jsonc");
 
   try {
     writeFileSync(
@@ -789,7 +864,7 @@ runTest("Permission-system extension config reports one-line JSONC parse warning
 
 runTest("Permission-system extension config normalizes invalid persisted values back to defaults", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-invalid-"));
-  const configPath = join(baseDir, "config.json");
+  const configPath = join(baseDir, "pi-permissions.jsonc");
 
   try {
     writeFileSync(
@@ -812,7 +887,7 @@ runTest("Permission-system extension config normalizes invalid persisted values 
 
 runTest("Permission-system extension config save persists normalized synced config but not yoloMode", () => {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-config-save-"));
-  const configPath = join(baseDir, "config.json");
+  const configPath = join(baseDir, "pi-permissions.jsonc");
 
   try {
     const saved = savePermissionSystemConfig(
@@ -3786,19 +3861,19 @@ runTest("Permission-system extension config normalizes forwardedPromptTimeoutSec
   );
   assert.equal(
     normalizePermissionSystemConfig({}).forwardedPromptTimeoutSeconds,
-    30,
+    DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
   );
   assert.equal(
     normalizePermissionSystemConfig({ forwardedPromptTimeoutSeconds: 0 }).forwardedPromptTimeoutSeconds,
-    30,
+    DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
   );
   assert.equal(
     normalizePermissionSystemConfig({ forwardedPromptTimeoutSeconds: -10 }).forwardedPromptTimeoutSeconds,
-    30,
+    DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
   );
   assert.equal(
     normalizePermissionSystemConfig({ forwardedPromptTimeoutSeconds: "abc" }).forwardedPromptTimeoutSeconds,
-    30,
+    DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
   );
 });
 
@@ -3823,6 +3898,7 @@ await runAsyncTest("Forwarded permission warning is only shown when debug config
         id: "req-debug-false",
         responseNonce: "nonce-f",
         createdAt: Date.now(),
+        expiresAt: null,
         requesterSessionId: "sub-session",
         targetSessionId: sessionId,
         requesterAgentName: "git",
@@ -3848,6 +3924,7 @@ await runAsyncTest("Forwarded permission warning is only shown when debug config
         id: "req-debug-true",
         responseNonce: "nonce-t",
         createdAt: Date.now(),
+        expiresAt: null,
         requesterSessionId: "sub-session",
         targetSessionId: sessionId,
         requesterAgentName: "git",
@@ -3891,7 +3968,8 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
       JSON.stringify({
         id: "req-timeout-45",
         responseNonce: "nonce-45",
-        createdAt: Date.now(),
+        createdAt: Date.now() - 5 * 1000,
+        expiresAt: Date.now() + 40 * 1000,
         requesterSessionId: "sub-session",
         targetSessionId: sessionId,
         requesterAgentName: "git",
@@ -3907,8 +3985,8 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
     );
 
     assert.ok(
-      prompts45.some((p) => p.includes("45 seconds")),
-      `Expected prompt to include "45 seconds", got: ${prompts45.join("\n")}`,
+      prompts45.some((p) => p.includes("40 seconds")),
+      `Expected prompt to include "40 seconds", got: ${prompts45.join("\n")}`,
     );
 
     const promptsUnlimited: string[] = [];
@@ -3917,7 +3995,8 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
       JSON.stringify({
         id: "req-timeout-unlimited",
         responseNonce: "nonce-ul",
-        createdAt: Date.now(),
+        createdAt: Date.now() - 11 * 60 * 1000,
+        expiresAt: null,
         requesterSessionId: "sub-session",
         targetSessionId: sessionId,
         requesterAgentName: "git",
@@ -3941,6 +4020,70 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
     delete process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
   }
 });
+
+await runAsyncTest(
+  "Forwarding honors finite deadlines above ten minutes and rejects expired requests",
+  async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), "pi-forwarded-deadlines-"));
+    const previousForwardingDir =
+      process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+    process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] = baseDir;
+    const location = createPermissionForwardingLocation(
+      join(baseDir, "sessions", "permission-forwarding"),
+      "test-session",
+    );
+    mkdirSync(location.requestsDir, { recursive: true });
+    mkdirSync(location.responsesDir, { recursive: true });
+    try {
+      for (const expired of [false, true]) {
+        const id = expired ? "expired" : "longer-than-ten-minutes";
+        const prompts: string[] = [];
+        writeFileSync(
+          join(location.requestsDir, `${id}.json`),
+          JSON.stringify({
+            id,
+            responseNonce: id,
+            createdAt: Date.now() - 11 * 60 * 1000,
+            expiresAt: Date.now() + (expired ? -1000 : 60 * 1000),
+            requesterSessionId: "child",
+            targetSessionId: "test-session",
+            requesterAgentName: "worker",
+            message: "Read file?",
+          }),
+        );
+        setExtensionConfig(DEFAULT_EXTENSION_CONFIG);
+        // SAFETY: The fixture implements the session and UI methods consumed by the forwarding processor.
+        const ctx = createMockContext(baseDir, prompts, {
+          hasUI: true,
+        }) as never;
+        await processForwardedPermissionRequests(ctx, {
+          preserveLocation: true,
+        });
+        const response = readFileSync(
+          join(location.responsesDir, `${id}.json`),
+          "utf8",
+        );
+        if (expired) {
+          assert.deepEqual(prompts, []);
+          assert.match(response, /"approved":false/);
+          assert.match(response, /expired before it could be displayed/);
+        } else {
+          assert.ok(
+            prompts.some((prompt) => prompt.includes("60 seconds remaining")),
+          );
+          assert.match(response, /"approved":true/);
+        }
+      }
+    } finally {
+      if (previousForwardingDir === undefined)
+        delete process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+      else
+        process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] =
+          previousForwardingDir;
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  },
+);
 
 await runAsyncTest(
   "background commands use bash policy despite a tool-level allow",

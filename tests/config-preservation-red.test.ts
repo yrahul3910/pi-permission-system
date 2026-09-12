@@ -1,6 +1,6 @@
 // Issue #31 RED TDD: Enabling debug mode (or toggling yolo mode) overwrites the
 // entire config file, destroying user-defined permission fields (defaultPolicy,
-// tools, bash, mcp, skills, special) that coexist in the same config.json.
+// tools, bash, mcp, skills, special) that coexist in the same pi-permissions.jsonc.
 //
 // Root cause: savePermissionSystemConfig writes ONLY the extension fields
 // (debug, yoloMode, forwardedPromptTimeoutSeconds) back to disk, discarding all
@@ -8,7 +8,7 @@
 // so even a round-trip load→save cycle erases everything else.
 //
 // Note: yoloMode has since become session-scoped — saves no longer write it to
-// disk at all (see EXTENSION_CONFIG_KEYS), so these tests assert it is left
+// disk at all (see savePermissionSystemConfig), so these tests assert it is left
 // untouched rather than updated.
 //
 // Desired behavior: saving the extension config MUST preserve all existing
@@ -61,7 +61,7 @@ type TestResult = {
 };
 
 // The full user config from the issue report — permission fields coexisting
-// with extension fields in a single config.json.
+// with extension fields in a single pi-permissions.jsonc.
 const ISSUE_CONFIG_WITH_PERMISSIONS = {
   defaultPolicy: {
     tools: "ask",
@@ -118,7 +118,7 @@ function createIsolatedConfigDir(initialContent?: string): {
   cleanup: () => void;
 } {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-issue31-"));
-  const configPath = join(baseDir, "config.json");
+  const configPath = join(baseDir, "pi-permissions.jsonc");
   const originalConfigEnv = process.env[CONFIG_PATH_ENV_KEY];
 
   if (initialContent !== undefined) {
@@ -196,7 +196,7 @@ function createRuntimeHarness(
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-issue31-runtime-"));
   const cwd = join(baseDir, "workspace");
   const policyDir = join(baseDir, "policy");
-  const extensionConfigPath = join(baseDir, "config.json");
+  const extensionConfigPath = join(baseDir, "pi-permissions.jsonc");
   const logsDir = join(baseDir, "logs");
   const prompts: string[] = [];
   const handlers: Record<string, MockHandler> = {};
@@ -280,7 +280,7 @@ const tests: IssueTest[] = [
     name: "savePermissionSystemConfig preserves permission fields when toggling debug",
     kind: "red",
     scenario:
-      "User has a config.json with defaultPolicy, tools, bash, mcp, skills, special, and extension fields. "
+      "User has a pi-permissions.jsonc with defaultPolicy, tools, bash, mcp, skills, special, and extension fields. "
       + "Toggling debug to true via save must NOT destroy the permission fields.",
     fn: () => {
       const { configPath, cleanup } = createIsolatedConfigDir(
@@ -664,7 +664,7 @@ const tests: IssueTest[] = [
         // Synced extension fields should now be present. yoloMode is
         // session-scoped, so saves must not add it.
         assert.equal(raw.debug, true);
-        assert.equal(raw.forwardedPromptTimeoutSeconds, 30);
+        assert.equal(raw.forwardedPromptTimeoutSeconds, DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds);
         assert.equal(
           Object.prototype.hasOwnProperty.call(raw, "yoloMode"),
           false,
@@ -941,7 +941,7 @@ const tests: IssueTest[] = [
           false,
           "yoloMode is session-scoped and must not be added by saves",
         );
-        assert.equal(raw.forwardedPromptTimeoutSeconds, 30);
+        assert.equal(raw.forwardedPromptTimeoutSeconds, DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds);
       } finally {
         cleanup();
       }
@@ -1164,7 +1164,7 @@ const tests: IssueTest[] = [
       + "{ success: false, error: ... } rather than throwing, and must not corrupt any existing file.",
     fn: () => {
       // Use a path in a non-existent directory with no parent to force failure.
-      const impossiblePath = join(tmpdir(), "issue31-nonexistent-dir-" + Date.now(), "config.json");
+      const impossiblePath = join(tmpdir(), "issue31-nonexistent-dir-" + Date.now(), "pi-permissions.jsonc");
       const saved = savePermissionSystemConfig(
         { ...DEFAULT_EXTENSION_CONFIG, debug: true },
         impossiblePath,
@@ -1194,7 +1194,7 @@ const tests: IssueTest[] = [
       + "extension fields (debug, yoloMode, forwardedPromptTimeoutSeconds).",
     fn: () => {
       const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-issue31-new-"));
-      const configPath = join(baseDir, "config.json");
+      const configPath = join(baseDir, "pi-permissions.jsonc");
       const originalConfigEnv = process.env[CONFIG_PATH_ENV_KEY];
 
       try {
@@ -1208,7 +1208,7 @@ const tests: IssueTest[] = [
         const raw = readRawConfig(configPath);
         assert.equal(raw.debug, false);
         assert.equal(raw.yoloMode, false);
-        assert.equal(raw.forwardedPromptTimeoutSeconds, 30);
+        assert.equal(raw.forwardedPromptTimeoutSeconds, DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds);
         // No permission fields should exist in a freshly created config.
         for (const key of PERMISSION_KEYS) {
           assert.ok(
@@ -1517,7 +1517,7 @@ const tests: IssueTest[] = [
     kind: "red",
     scenario:
       "If the user has forwardedPromptTimeoutSeconds set to 0 (invalid, not > 0), normalize falls back to the "
-      + "default 30. When saved, the default 30 overwrites the user's original 0 value — a silent data modification. "
+      + "default 600. When saved, the default 600 overwrites the user's original 0 value — a silent data modification. "
       + "The save must preserve the original raw value or at minimum preserve all permission fields.",
     fn: () => {
       const configWithZeroTimeout = {
@@ -1531,8 +1531,8 @@ const tests: IssueTest[] = [
 
       try {
         const loaded = loadPermissionSystemConfig(configPath);
-        // 0 is not > 0, so normalize falls back to default 30.
-        assert.equal(loaded.config.forwardedPromptTimeoutSeconds, 30);
+        // 0 is not > 0, so normalize falls back to default 600.
+        assert.equal(loaded.config.forwardedPromptTimeoutSeconds, DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds);
 
         const saved = savePermissionSystemConfig(loaded.config, configPath);
         assert.equal(saved.success, true);
@@ -1555,7 +1555,7 @@ const tests: IssueTest[] = [
     name: "savePermissionSystemConfig preserves permissions when forwardedPromptTimeoutSeconds is negative",
     kind: "red",
     scenario:
-      "If forwardedPromptTimeoutSeconds is negative (invalid), normalize falls back to default 30. Saving must "
+      "If forwardedPromptTimeoutSeconds is negative (invalid), normalize falls back to default DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds. Saving must "
       + "still preserve all permission fields.",
     fn: () => {
       const configWithNegativeTimeout = {
@@ -1569,8 +1569,8 @@ const tests: IssueTest[] = [
 
       try {
         const loaded = loadPermissionSystemConfig(configPath);
-        // -5 is not > 0, so normalize falls back to default 30.
-        assert.equal(loaded.config.forwardedPromptTimeoutSeconds, 30);
+        // -5 is not > 0, so normalize falls back to default 600.
+        assert.equal(loaded.config.forwardedPromptTimeoutSeconds, DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds);
 
         const saved = savePermissionSystemConfig(loaded.config, configPath);
         assert.equal(saved.success, true);
@@ -1592,7 +1592,7 @@ const tests: IssueTest[] = [
     name: "savePermissionSystemConfig preserves permissions when forwardedPromptTimeoutSeconds is a string",
     kind: "red",
     scenario:
-      "If forwardedPromptTimeoutSeconds is a string like \"30\" (invalid type), normalize falls back to default 30. "
+      "If forwardedPromptTimeoutSeconds is a string like \"30\" (invalid type), normalize falls back to default DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds. "
       + "Saving must still preserve all permission fields.",
     fn: () => {
       const configWithStringTimeout = {
@@ -1606,8 +1606,8 @@ const tests: IssueTest[] = [
 
       try {
         const loaded = loadPermissionSystemConfig(configPath);
-        // String "30" is not a number, so normalize falls back to default 30.
-        assert.equal(loaded.config.forwardedPromptTimeoutSeconds, 30);
+        // String "30" is not a number, so normalize falls back to default 600.
+        assert.equal(loaded.config.forwardedPromptTimeoutSeconds, DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds);
 
         const saved = savePermissionSystemConfig(loaded.config, configPath);
         assert.equal(saved.success, true);
@@ -1655,7 +1655,7 @@ const tests: IssueTest[] = [
         // debug should be read as true; yoloMode and timeout should be defaults.
         assert.equal(loaded.config.debug, true);
         assert.equal(loaded.config.yoloMode, false);
-        assert.equal(loaded.config.forwardedPromptTimeoutSeconds, 30);
+        assert.equal(loaded.config.forwardedPromptTimeoutSeconds, DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds);
 
         // Save with debug toggled off (simulates user changing debug in modal).
         const saved = savePermissionSystemConfig(
@@ -1671,7 +1671,7 @@ const tests: IssueTest[] = [
           false,
           "yoloMode is session-scoped and must not be added by saves",
         );
-        assert.equal(raw.forwardedPromptTimeoutSeconds, 30, "timeout should be present as default");
+        assert.equal(raw.forwardedPromptTimeoutSeconds, DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds, "timeout should be present as default");
 
         for (const key of PERMISSION_KEYS) {
           assert.ok(
@@ -1919,12 +1919,12 @@ const tests: IssueTest[] = [
     name: "savePermissionSystemConfig preserves symlink when config file is a symlink",
     kind: "red",
     scenario:
-      "If config.json is a symlink to another file, the tmp+rename write approach replaces the symlink with a "
+      "If pi-permissions.jsonc is a symlink to another file, the tmp+rename write approach replaces the symlink with a "
       + "regular file, breaking the symlink. The save should preserve the symlink relationship.",
     fn: () => {
       const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-issue31-symlink-"));
-      const realConfigPath = join(baseDir, "real-config.json");
-      const symlinkConfigPath = join(baseDir, "config.json");
+      const realConfigPath = join(baseDir, "real-pi-permissions.jsonc");
+      const symlinkConfigPath = join(baseDir, "pi-permissions.jsonc");
       const originalConfigEnv = process.env[CONFIG_PATH_ENV_KEY];
 
       try {
@@ -1946,7 +1946,7 @@ const tests: IssueTest[] = [
         // The symlink must still be a symlink (not replaced by a regular file).
         assert.ok(
           lstatSync(symlinkConfigPath).isSymbolicLink(),
-          "config.json must remain a symlink after save — tmp+rename must not break the symlink",
+          "pi-permissions.jsonc must remain a symlink after save — tmp+rename must not break the symlink",
         );
 
         // The real file (symlink target) should contain the updated content.

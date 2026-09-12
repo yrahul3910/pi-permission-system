@@ -33,5 +33,10 @@
     "doom_loop": "deny",
     "external_directory": "ask",
     "external_directory:/home/alice/shared/*": "allow"
-  }
+  },
+  "enabled": true,
+  "debug": false,
+  "yoloMode": false,
+  "desktopNotifications": true,
+  "forwardedPromptTimeoutSeconds": 600
 }

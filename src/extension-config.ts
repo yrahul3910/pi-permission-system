@@ -1,9 +1,28 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import { applyEdits, modify, parseTree } from "jsonc-parser";
+
 import { toRecord } from "./common.js";
-import { formatJsoncConfigLoadWarning, isNodeErrorWithCode, parseJsoncConfig } from "./jsonc-config.js";
+import {
+  formatJsoncConfigLoadWarning,
+  isNodeErrorWithCode,
+  parseJsoncConfig,
+} from "./jsonc-config.js";
 
 export const EXTENSION_ID = "pi-permission-system";
 
@@ -32,7 +51,7 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debug: false,
   yoloMode: false,
   desktopNotifications: true,
-  forwardedPromptTimeoutSeconds: 30,
+  forwardedPromptTimeoutSeconds: 600,
 };
 
 export function resolveExtensionRoot(moduleUrl = import.meta.url): string {
@@ -40,25 +59,38 @@ export function resolveExtensionRoot(moduleUrl = import.meta.url): string {
 }
 
 export const EXTENSION_ROOT = resolveExtensionRoot();
-export const CONFIG_PATH = join(EXTENSION_ROOT, "config.json");
+export const CONFIG_PATH = join(getAgentDir(), "pi-permissions.jsonc");
 export const LOGS_DIR = join(EXTENSION_ROOT, "logs");
 export const CONFIG_PATH_ENV_KEY = "PI_PERMISSION_SYSTEM_CONFIG_PATH";
 export const LOGS_DIR_ENV_KEY = "PI_PERMISSION_SYSTEM_LOGS_DIR";
 
-function resolveOverridablePath(explicitValue: string | undefined, envKey: string, defaultValue: string): string {
+function resolveOverridablePath(
+  explicitValue: string | undefined,
+  envKey: string,
+  defaultValue: string,
+): string {
   const overridePath = process.env[envKey]?.trim();
   return explicitValue || overridePath || defaultValue;
 }
 
+/** Resolve the user settings file, honoring explicit and router policy paths. */
 export function getPermissionSystemConfigPath(configPath?: string): string {
-  return resolveOverridablePath(configPath, CONFIG_PATH_ENV_KEY, CONFIG_PATH);
+  const agentDir =
+    process.env.PI_PERMISSION_SYSTEM_POLICY_AGENT_DIR?.trim() || getAgentDir();
+  return resolveOverridablePath(
+    configPath,
+    CONFIG_PATH_ENV_KEY,
+    join(agentDir, "pi-permissions.jsonc"),
+  );
 }
 
 export function getPermissionSystemLogsDir(logsDir?: string): string {
   return resolveOverridablePath(logsDir, LOGS_DIR_ENV_KEY, LOGS_DIR);
 }
 
-export function getPermissionSystemDebugPath(logsDir = getPermissionSystemLogsDir()): string {
+export function getPermissionSystemDebugPath(
+  logsDir = getPermissionSystemLogsDir(),
+): string {
   return join(logsDir, `${EXTENSION_ID}-debug.jsonl`);
 }
 
@@ -68,22 +100,23 @@ export function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     debug: DEFAULT_EXTENSION_CONFIG.debug,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
     desktopNotifications: DEFAULT_EXTENSION_CONFIG.desktopNotifications,
-    forwardedPromptTimeoutSeconds: DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
+    forwardedPromptTimeoutSeconds:
+      DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
   };
 }
 
-function createDefaultConfigContent(): string {
-  return `${JSON.stringify(DEFAULT_EXTENSION_CONFIG, null, 2)}\n`;
-}
-
-export function normalizePermissionSystemConfig(raw: unknown): PermissionSystemExtensionConfig {
+/** Parse optional JSONC settings, using defaults for missing or invalid values. */
+export function normalizePermissionSystemConfig(
+  raw: unknown,
+): PermissionSystemExtensionConfig {
   const record = toRecord(raw);
   const rawTimeout = record.forwardedPromptTimeoutSeconds;
-  let forwardedPromptTimeoutSeconds: number | null = DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds;
+  let forwardedPromptTimeoutSeconds: number | null =
+    DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds;
 
   if (rawTimeout === null || rawTimeout === false) {
     forwardedPromptTimeoutSeconds = null;
-  } else if (typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0) {
+  } else if (Value.Check(Type.Number({ exclusiveMinimum: 0 }), rawTimeout)) {
     forwardedPromptTimeoutSeconds = rawTimeout;
   }
 
@@ -101,30 +134,29 @@ function ensureConfigDirectory(configPath: string): void {
   mkdirSync(dirname(configPath), { recursive: true });
 }
 
-export function ensurePermissionSystemConfig(configPath = getPermissionSystemConfigPath()): { created: boolean; warning?: string } {
-  if (existsSync(configPath)) {
-    return { created: false };
-  }
+/** Create the user settings file when missing; existing permission rules remain untouched. */
+export function ensurePermissionSystemConfig(
+  configPath = getPermissionSystemConfigPath(),
+) {
+  if (existsSync(configPath)) return { created: false };
 
-  try {
-    ensureConfigDirectory(configPath);
-    writeFileSync(configPath, createDefaultConfigContent(), "utf-8");
-    return { created: true };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      created: false,
-      warning: `Failed to initialize permission-system config at '${configPath}': ${message}`,
-    };
-  }
+  const saved = saveConfigFields(DEFAULT_EXTENSION_CONFIG, configPath);
+  return { created: saved.success, warning: saved.error };
 }
 
-export function loadPermissionSystemConfig(configPath = getPermissionSystemConfigPath()): PermissionSystemConfigLoadResult {
+/** Read extension settings from the user permission file, using defaults for absent fields. */
+export function loadPermissionSystemConfig(
+  configPath = getPermissionSystemConfigPath(),
+): PermissionSystemConfigLoadResult {
   const ensureResult = ensurePermissionSystemConfig(configPath);
 
   try {
     const raw = readFileSync(configPath, "utf-8");
-    const parsed = parseJsoncConfig(raw, configPath, "permission-system config");
+    const parsed = parseJsoncConfig(
+      raw,
+      configPath,
+      "permission-system config",
+    );
     const config = normalizePermissionSystemConfig(parsed);
     return {
       config,
@@ -135,95 +167,46 @@ export function loadPermissionSystemConfig(configPath = getPermissionSystemConfi
     return {
       config: cloneDefaultConfig(),
       created: ensureResult.created,
-      warning: ensureResult.warning
-        ?? formatJsoncConfigLoadWarning(configPath, error, "permission-system config", "using default extension config")
-        ?? undefined,
+      warning:
+        ensureResult.warning ??
+        formatJsoncConfigLoadWarning(
+          configPath,
+          error,
+          "permission-system config",
+          "using default extension config",
+        ) ??
+        undefined,
     };
   }
 }
 
 /**
- * Extension-managed keys that are written/updated by savePermissionSystemConfig.
- * All other keys in the config file are preserved as-is.
- *
- * `yoloMode` is deliberately NOT in this list: yolo mode is session-scoped
- * runtime state. Toggling it must never propagate to other sessions through the
- * shared config file, so saves leave any existing `yoloMode` key untouched
- * (a manually edited value simply acts as the startup default for new sessions).
- */
-const EXTENSION_CONFIG_KEYS: readonly (keyof PermissionSystemExtensionConfig)[] = [
-  "debug",
-  "desktopNotifications",
-  "forwardedPromptTimeoutSeconds",
-];
-
-/**
  * Reads the existing config file and returns a parsed object plus a flag
  * indicating whether the file was readable and parseable.
  *
- * - Returns null when the file does not exist (caller should create fresh).
- * - Returns { parseError: true } when the file exists but cannot be parsed.
+ * - A missing file returns a null record and empty-object JSONC content.
+ * - parseError is true for unreadable, malformed, or non-object roots.
  *   The caller MUST NOT overwrite a corrupt file with only extension defaults.
  */
-function readExistingConfig(
-  configPath: string,
-): { record: Record<string, unknown> | null; parseError: boolean } {
+function readExistingConfig(configPath: string) {
   if (!existsSync(configPath)) {
-    return { record: null, parseError: false };
+    return { record: null, content: "{}\n", parseError: false };
   }
 
   try {
     const raw = readFileSync(configPath, "utf-8");
     // Strip a UTF-8 BOM if present so the JSONC parser can handle it.
     const bomStripped = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
-    const parsed = parseJsoncConfig(bomStripped, configPath, "permission-system config");
+    const parsed = parseJsoncConfig(
+      bomStripped,
+      configPath,
+      "permission-system config",
+    );
     const record = toRecord(parsed);
-    return { record, parseError: false };
+    return { record, content: bomStripped, parseError: record !== parsed };
   } catch {
-    return { record: null, parseError: true };
+    return { record: null, content: "", parseError: true };
   }
-}
-
-/**
- * Merges the normalized extension fields into the existing config record.
- *
- * - If an extension key already exists in the record, its value is updated in place
- *   (preserving key ordering).
- * - If an extension key does not exist, it is appended at the end.
- * - All non-extension keys (permissions, custom keys, $schema, etc.) are left untouched.
- * - Prototype-pollution keys (__proto__, constructor, prototype) are stripped.
- */
-function mergeExtensionFields(
-  existing: Record<string, unknown>,
-  normalized: PermissionSystemExtensionConfig,
-): Record<string, unknown> {
-  // Build a safe copy that excludes prototype-pollution keys.
-  const merged: Record<string, unknown> = {};
-  for (const key of Object.keys(existing)) {
-    if (key === "__proto__" || key === "constructor" || key === "prototype") {
-      continue;
-    }
-    merged[key] = existing[key];
-  }
-
-  // `yoloMode` is intentionally omitted — see EXTENSION_CONFIG_KEYS above.
-  const normalizedRecord: Record<string, unknown> = {
-    debug: normalized.debug,
-    desktopNotifications: normalized.desktopNotifications,
-    forwardedPromptTimeoutSeconds: normalized.forwardedPromptTimeoutSeconds,
-  };
-
-  for (const key of EXTENSION_CONFIG_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(merged, key)) {
-      // Update in place — preserves original key ordering.
-      merged[key] = normalizedRecord[key];
-    } else {
-      // Append at the end.
-      merged[key] = normalizedRecord[key];
-    }
-  }
-
-  return merged;
 }
 
 /**
@@ -231,7 +214,10 @@ function mergeExtensionFields(
  * realpath so that the symlink relationship is preserved (we write through to
  * the target instead of replacing the symlink with a regular file).
  */
-function resolveWriteTarget(configPath: string): { writePath: string; isSymlink: boolean } {
+function resolveWriteTarget(configPath: string): {
+  writePath: string;
+  isSymlink: boolean;
+} {
   try {
     const stats = lstatSync(configPath);
     if (stats.isSymbolicLink()) {
@@ -248,12 +234,27 @@ function resolveWriteTarget(configPath: string): { writePath: string; isSymlink:
   return { writePath: configPath, isSymlink: false };
 }
 
+/** Save synced settings while leaving the startup YOLO default and all permission rules untouched. */
 export function savePermissionSystemConfig(
   config: PermissionSystemExtensionConfig,
   configPath = getPermissionSystemConfigPath(),
 ): PermissionSystemConfigSaveResult {
   const normalized = normalizePermissionSystemConfig(config);
+  return saveConfigFields(
+    {
+      debug: normalized.debug,
+      desktopNotifications: normalized.desktopNotifications,
+      forwardedPromptTimeoutSeconds: normalized.forwardedPromptTimeoutSeconds,
+    },
+    configPath,
+  );
+}
 
+/** Update only the supplied JSONC fields atomically, preserving comments, rules, and symlinks. */
+function saveConfigFields(
+  fields: Partial<PermissionSystemExtensionConfig>,
+  configPath: string,
+): PermissionSystemConfigSaveResult {
   // Read the existing file to preserve all non-extension keys.
   const existing = readExistingConfig(configPath);
 
@@ -267,17 +268,38 @@ export function savePermissionSystemConfig(
     };
   }
 
-  // Merge extension fields into the existing record (or start fresh if no file).
-  const baseRecord = existing.record ?? {};
-  const merged = mergeExtensionFields(baseRecord, normalized);
+  let content = existing.content;
+  const formattingOptions = { insertSpaces: true, tabSize: 2, eol: "\n" };
+  for (const [key, value] of Object.entries(fields)) {
+    const values = (parseTree(content)?.children ?? [])
+      .filter((property) => property.children?.[0]?.value === key)
+      .flatMap((property) => property.children?.slice(1) ?? []);
+    const edits =
+      values.length > 0
+        ? values.map((node) => ({
+            offset: node.offset,
+            length: node.length,
+            content: JSON.stringify(value),
+          }))
+        : modify(content, [key], value, { formattingOptions });
+    content = applyEdits(content, edits);
+  }
+  for (const key of ["__proto__", "constructor", "prototype"]) {
+    if (Object.hasOwn(existing.record ?? {}, key)) {
+      content = applyEdits(
+        content,
+        modify(content, [key], undefined, { formattingOptions }),
+      );
+    }
+  }
 
   // Resolve the write target (handle symlinks by writing through to the real path).
   const { writePath } = resolveWriteTarget(configPath);
-  const tmpPath = `${writePath}.tmp`;
+  const tmpPath = `${writePath}.${process.pid}.${randomUUID()}.tmp`;
 
   try {
     ensureConfigDirectory(writePath);
-    writeFileSync(tmpPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
+    writeFileSync(tmpPath, content, "utf-8");
     renameSync(tmpPath, writePath);
     return { success: true };
   } catch (error) {
@@ -303,7 +325,9 @@ export function savePermissionSystemConfig(
   }
 }
 
-export function ensurePermissionSystemLogsDirectory(logsDir = getPermissionSystemLogsDir()): string | undefined {
+export function ensurePermissionSystemLogsDirectory(
+  logsDir = getPermissionSystemLogsDir(),
+): string | undefined {
   try {
     mkdirSync(logsDir, { recursive: true });
     return undefined;
