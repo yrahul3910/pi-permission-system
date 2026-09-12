@@ -381,26 +381,34 @@ await runAsyncTest("ISSUE23-E5: permission dialog labels use OpenCode-style opti
 
 await runAsyncTest("Permission dialog passes timeout options and returns configured timeout denial reason", async () => {
   let displayedOptions: { timeout?: number } | undefined;
-  const decision = await requestPermissionDecisionFromUi(
-    {
-      select: async (_title, _options, options) => {
-        displayedOptions = options;
-        return undefined;
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  try {
+    const decision = await requestPermissionDecisionFromUi(
+      {
+        select: async (_title, _options, options) => {
+          displayedOptions = options;
+          now += 30_000;
+          return undefined;
+        },
+        input: async () => undefined,
       },
-      input: async () => undefined,
-    },
-    "Permission Required",
-    "Agent requested bash command 'git status'. Allow this command?",
-    {
-      timeoutMs: 30_000,
-      timeoutDenialReason: "permission_timeout: no response.",
-    },
-  );
+      "Permission Required",
+      "Agent requested bash command 'git status'. Allow this command?",
+      {
+        timeoutMs: 30_000,
+        timeoutDenialReason: "permission_timeout: no response.",
+      },
+    );
 
-  assert.deepEqual(displayedOptions, { timeout: 30_000 });
-  assert.equal(decision.approved, false);
-  assert.equal(decision.state, "reject");
-  assert.equal(decision.denialReason, "permission_timeout: no response.");
+    assert.deepEqual(displayedOptions, { timeout: 30_000 });
+    assert.equal(decision.approved, false);
+    assert.equal(decision.state, "reject");
+    assert.equal(decision.denialReason, "permission_timeout: no response.");
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 // E6: Dialog label maps Allow Always to the always protocol state

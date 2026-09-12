@@ -14,11 +14,18 @@ export interface PermissionDecisionUiSelectOptions {
 
 export interface PermissionDecisionUi {
   select(title: string, options: string[], optionsOverride?: PermissionDecisionUiSelectOptions): Promise<string | undefined>;
-  input(title: string, placeholder?: string): Promise<string | undefined>;
+  input(
+    title: string,
+    placeholder?: string,
+    optionsOverride?: PermissionDecisionUiSelectOptions,
+  ): Promise<string | undefined>;
 }
 
 export type PermissionDecisionRequestOptions = {
+  /** Time budget for waiting in the queue and answering the dialog. */
   timeoutMs?: number;
+  /** Absolute request expiration, in milliseconds since the Unix epoch. */
+  expiresAt?: number;
   timeoutDenialReason?: string;
   /**
    * Command family prefixes (e.g. ["wc", "git push"]) for a bash prompt.
@@ -251,7 +258,95 @@ export function isPermissionDecisionState(
     || value === "reject";
 }
 
+const pendingPermissionDialogs = new WeakMap<
+  PermissionDecisionUi,
+  Promise<void>
+>();
+
+function createRejectDecision(denialReason?: string): PermissionPromptDecision {
+  return denialReason
+    ? { approved: false, state: "reject", denialReason }
+    : { approved: false, state: "reject" };
+}
+
 export async function requestPermissionDecisionFromUi(
+  ui: PermissionDecisionUi,
+  title: string,
+  message: string,
+  options: PermissionDecisionRequestOptions = {},
+): Promise<PermissionPromptDecision> {
+  const promptDeadline =
+    options.timeoutMs !== undefined &&
+    Number.isFinite(options.timeoutMs) &&
+    options.timeoutMs > 0
+      ? Date.now() + options.timeoutMs
+      : undefined;
+  const deadline =
+    options.expiresAt === undefined
+      ? promptDeadline
+      : Math.min(options.expiresAt, promptDeadline ?? Infinity);
+  const previous = pendingPermissionDialogs.get(ui);
+  let release = () => {};
+  const completed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  pendingPermissionDialogs.set(ui, completed);
+  void completed.then(() => {
+    if (pendingPermissionDialogs.get(ui) === completed) {
+      pendingPermissionDialogs.delete(ui);
+    }
+  });
+
+  // Pi has one editor slot for selectors and inputs. Keep the entire decision,
+  // including a rejection reason, visible until it resolves before opening another.
+  let queueTimer: NodeJS.Timeout | undefined;
+  let isReady = true;
+  try {
+    if (previous) {
+      if (deadline === undefined) {
+        await previous;
+      } else {
+        isReady = await Promise.race([
+          previous.then(() => true),
+          new Promise<boolean>((resolve) => {
+            const expire = (): void => {
+              const remainingMs = deadline - Date.now();
+              if (remainingMs > 0) {
+                // Timer wakeups and Date.now() need not advance in lockstep.
+                queueTimer = setTimeout(expire, remainingMs);
+              } else {
+                resolve(false);
+              }
+            };
+            expire();
+          }),
+        ]);
+      }
+    }
+    clearTimeout(queueTimer);
+    const remainingMs =
+      deadline === undefined ? undefined : deadline - Date.now();
+    if (!isReady || (remainingMs !== undefined && remainingMs <= 0)) {
+      return createRejectDecision(options.timeoutDenialReason);
+    }
+    return await selectPermissionDecision(ui, title, message, {
+      ...options,
+      timeoutMs: remainingMs,
+      expiresAt: deadline,
+    });
+  } finally {
+    clearTimeout(queueTimer);
+    // Expiration ends this request's wait, but later dialogs must still wait for
+    // the predecessor to close before they can use Pi's editor slot.
+    if (!isReady && previous) {
+      void previous.then(release);
+    } else {
+      release();
+    }
+  }
+}
+
+async function selectPermissionDecision(
   ui: PermissionDecisionUi,
   title: string,
   message: string,
@@ -272,6 +367,9 @@ export async function requestPermissionDecisionFromUi(
     decisionOptions,
     selectOptions,
   );
+  if (options.expiresAt !== undefined && Date.now() >= options.expiresAt) {
+    return createRejectDecision(options.timeoutDenialReason);
+  }
 
   if (selected === APPROVE_ONCE_OPTION) {
     return {
@@ -295,19 +393,26 @@ export async function requestPermissionDecisionFromUi(
   }
 
   if (selected === REJECT_WITH_REASON_OPTION) {
+    const remainingMs =
+      options.expiresAt === undefined
+        ? undefined
+        : options.expiresAt - Date.now();
+    if (remainingMs !== undefined && remainingMs <= 0) {
+      return createRejectDecision(options.timeoutDenialReason);
+    }
     const denialReason = normalizePermissionDenialReason(
       await ui.input(
         `${title}\nShare why this request was denied (optional).`,
         "Reason shown back to the agent",
+        remainingMs === undefined ? undefined : { timeout: remainingMs },
       ),
     );
+    if (options.expiresAt !== undefined && Date.now() >= options.expiresAt) {
+      return createRejectDecision(options.timeoutDenialReason);
+    }
 
-    return denialReason
-      ? { approved: false, state: "reject", denialReason }
-      : { approved: false, state: "reject" };
+    return createRejectDecision(denialReason);
   }
 
-  return options.timeoutDenialReason
-    ? { approved: false, state: "reject", denialReason: options.timeoutDenialReason }
-    : { approved: false, state: "reject" };
+  return createRejectDecision();
 }
