@@ -1048,6 +1048,15 @@ export function isSubagentExecutionContext(ctx: ExtensionContext): boolean {
 
 /** Check whether this session can resolve an ask locally or through its parent. */
 function canRequestPermissionConfirmation(ctx: ExtensionContext, config: PermissionSystemExtensionConfig): boolean {
+  // Worktree-backed in-process runners do not always use the conventional
+  // subagent session directory or inject an <active_agent> marker. They are
+  // nevertheless children of the interactive runtime in this process. When
+  // that parent owns an enabled YOLO session, an ask needs no forwarding
+  // channel, so missing child metadata must not make the check fail closed.
+  if (!ctx.hasUI && interactiveRuntimeApi?.getYoloMode() === true) {
+    return true;
+  }
+
   return canResolveAskPermissionRequest({
     config,
     hasUI: ctx.hasUI,
@@ -2263,12 +2272,17 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     const decisionPromise = (async (): Promise<PermissionPromptDecision> => {
-      if (shouldAutoApprovePermissionState("ask", sessionConfig)) {
+      const parentYoloMode =
+        !ctx.hasUI && interactiveRuntimeApi?.getYoloMode() === true;
+      if (
+        shouldAutoApprovePermissionState("ask", sessionConfig) ||
+        parentYoloMode
+      ) {
         reviewPermissionDecision("permission_request.auto_approved", {
           ...details,
           resolution: "auto_response",
           decisionPersistence: "none",
-          decisionScope: "yolo_mode",
+          decisionScope: parentYoloMode ? "parent_yolo_mode" : "yolo_mode",
         });
         emitPermissionStateEvent(details, "approved");
         await extensionLogger.flush();

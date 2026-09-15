@@ -495,6 +495,57 @@ await runAsyncTest(
   },
 );
 
+await runAsyncTest(
+  "Worktree children inherit in-process parent YOLO without subagent metadata",
+  async () => {
+    const parent = createToolCallHarness(
+      { tools: { read: "ask" } },
+      ["read"],
+    );
+    try {
+      await parent.handlers.session_start?.(
+        { reason: "startup" },
+        createMockContext(parent.cwd, parent.prompts, { hasUI: true }),
+      );
+      const parentApi = getPiPermissionSystemRuntimeApi();
+      assert.ok(parentApi);
+      parentApi.setYoloMode(true);
+
+      // Worktree-backed runners may create a headless child outside the usual
+      // subagent-sessions directory without injecting an <active_agent> tag.
+      const child = createToolCallHarness(
+        { tools: { read: "ask" } },
+        ["read"],
+        { cwd: join(parent.baseDir, "worktrees", "feature") },
+      );
+      try {
+        const childContext = createMockContext(child.cwd, child.prompts);
+        assert.equal(isSubagentExecutionContext(childContext), false);
+        await child.handlers.session_start?.(
+          { reason: "startup" },
+          childContext,
+        );
+
+        const result = await child.handlers.tool_call?.(
+          {
+            toolName: "read",
+            toolCallId: "worktree-child-read",
+            input: { path: join(child.cwd, "file.txt") },
+          },
+          childContext,
+        );
+        assert.deepEqual(result, {});
+        assert.deepEqual(parent.prompts, []);
+        assert.deepEqual(child.prompts, []);
+      } finally {
+        await child.cleanup();
+      }
+    } finally {
+      await parent.cleanup();
+    }
+  },
+);
+
 await runAsyncTest("Extension exposes a runtime YOLO API for other extensions", async () => {
   const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
   const harness = createToolCallHarness(
