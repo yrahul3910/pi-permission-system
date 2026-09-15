@@ -2402,11 +2402,15 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     pendingForwardedRequestScan = false;
   };
 
-  const startForwardedPermissionPolling = (ctx: ExtensionContext): void => {
+  const startForwardedPermissionPolling = (
+    ctx: ExtensionContext,
+    claimOwnership = false,
+  ): void => {
     if (
       !ctx.hasUI ||
+      !runtimeApi ||
       isSubagentExecutionContext(ctx) ||
-      interactiveRuntime.api !== runtimeApi
+      (!claimOwnership && interactiveRuntime.api !== runtimeApi)
     ) {
       stopForwardedPermissionPolling();
       return;
@@ -2418,12 +2422,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       return;
     }
 
-    // Record this interactive session as the in-process forwarding parent so a
-    // concurrently running in-process subagent (which has no UI and no env hint
-    // naming its parent) can forward its `ask` prompts here. Set only after the
-    // location is confirmed — the request watcher is armed below in this same
-    // synchronous pass — so we never advertise a parent whose watcher never
-    // started, which would leave a child's forwarded request to time out.
+    // Keep the working owner if a replacement cannot prepare its directories.
+    // The watcher or fallback timer is armed below in this same synchronous pass.
+    if (claimOwnership) {
+      interactiveRuntime.api = runtimeApi;
+      registerPiPermissionSystemRuntimeApi(runtimeApi);
+    }
     interactiveRuntime.forwardingSessionId = sessionId;
 
     permissionForwardingContext = ctx;
@@ -2554,17 +2558,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   const refreshSessionRuntimeState = (ctx: ExtensionContext): void => {
     runtimeContext = ctx;
-    if (ctx.hasUI && runtimeApi) {
-      interactiveRuntime.api = runtimeApi;
-      interactiveRuntime.forwardingSessionId = null;
-      registerPiPermissionSystemRuntimeApi(runtimeApi);
-    }
     resetShownWarnings();
     refreshExtensionConfig(ctx);
     permissionManager = createPermissionManagerForCwd(ctx.cwd, notifyWarning);
     invalidateAgentStartCache();
     lastKnownActiveAgentName = getActiveAgentName(ctx);
-    startForwardedPermissionPolling(ctx);
+    startForwardedPermissionPolling(ctx, true);
     ensureFocusTracker(ctx);
   };
 

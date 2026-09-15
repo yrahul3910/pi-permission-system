@@ -214,7 +214,7 @@ function createToolCallHarness(
   mkdirSync(cwd, { recursive: true });
   writeFileSync(
     extensionConfigPath,
-    `${JSON.stringify({ ...config, ...DEFAULT_EXTENSION_CONFIG, ...options.extensionConfig, desktopNotifications: false }, null, 2)}\n`,
+    `${JSON.stringify({ ...config, ...(options.extensionConfig ?? DEFAULT_EXTENSION_CONFIG), desktopNotifications: false }, null, 2)}\n`,
     "utf8",
   );
 
@@ -661,6 +661,131 @@ await runAsyncTest(
           assert.equal(parentApi.getYoloMode(), true);
         }
       } finally {
+        await parent.cleanup();
+        if (previousForwardingDir === undefined)
+          delete process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+        else
+          process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] =
+            previousForwardingDir;
+      }
+    });
+  },
+);
+
+await runAsyncTest(
+  "Failed forwarding setup preserves the live owner until a replacement is ready",
+  async () => {
+    await withIsolatedSubagentEnv(async () => {
+      const parent = createToolCallHarness({}, ["write"]);
+      const previousForwardingDir =
+        process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+      process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] = parent.baseDir;
+      let replacement: ExtensionHarness | undefined;
+      try {
+        await parent.handlers.session_start?.(
+          { reason: "startup" },
+          createMockContext(parent.cwd, parent.prompts, { hasUI: true }),
+        );
+        const parentApi = getPiPermissionSystemRuntimeApi();
+        assert.ok(parentApi);
+        parentApi.setYoloMode(true);
+        const parentTarget =
+          getInteractivePermissionRuntime().forwardingSessionId;
+        assert.ok(parentTarget);
+        const factory = await importIsolatedExtension(
+          join(parent.baseDir, "failed-replacement-module"),
+        );
+        const candidate = createToolCallHarness({}, ["write"], { factory });
+        replacement = candidate;
+        const replacementContext = {
+          ...createMockContext(candidate.cwd, candidate.prompts, {
+            hasUI: true,
+          }),
+          sessionManager: {
+            getEntries: () => [],
+            getSessionId: () => "replacement-after-failure",
+            getSessionDir: () => candidate.cwd,
+          },
+        };
+        // A file where a directory is needed fails even when tests run as root.
+        const blockedRoot = join(candidate.baseDir, "blocked-root");
+        writeFileSync(blockedRoot, "not a directory");
+        process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] = blockedRoot;
+        try {
+          await candidate.handlers.session_start?.(
+            { reason: "startup" },
+            replacementContext,
+          );
+        } finally {
+          process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] = parent.baseDir;
+        }
+        assert.equal(getPiPermissionSystemRuntimeApi(), parentApi);
+        assert.equal(getInteractivePermissionRuntime().api, parentApi);
+        assert.equal(
+          getInteractivePermissionRuntime().forwardingSessionId,
+          parentTarget,
+        );
+        const childFactory = await importIsolatedExtension(
+          join(parent.baseDir, "child-after-failure-module"),
+        );
+        const child = createToolCallHarness(
+          { tools: { write: "ask" } },
+          ["write"],
+          { factory: childFactory },
+        );
+        try {
+          const childContext = {
+            ...createMockContext(child.cwd, child.prompts),
+            getSystemPrompt: () => '<active_agent name="worker"/>',
+            sessionManager: {
+              getEntries: () => [],
+              getSessionId: () => "child-after-failure",
+              getSessionDir: () => child.cwd,
+            },
+          };
+          await child.handlers.session_start?.(
+            { reason: "startup" },
+            childContext,
+          );
+          for (const yolo of [true, false]) {
+            parentApi.setYoloMode(yolo);
+            const result = await child.handlers.tool_call?.(
+              {
+                toolName: "write",
+                toolCallId: `after-failure-${yolo}`,
+                input: {
+                  path: join(child.cwd, `${yolo}.ts`),
+                  content: "fixture",
+                },
+              },
+              childContext,
+            );
+            assert.deepEqual(result, {});
+          }
+          assert.equal(
+            parent.prompts.length,
+            1,
+            "the original watcher must still serve the parent's dialog",
+          );
+          assert.deepEqual(candidate.prompts, []);
+          assert.deepEqual(child.prompts, []);
+        } finally {
+          await child.cleanup();
+        }
+        await candidate.handlers.session_start?.(
+          { reason: "reload" },
+          replacementContext,
+        );
+        const replacementApi = getPiPermissionSystemRuntimeApi();
+        assert.ok(replacementApi);
+        assert.notEqual(replacementApi, parentApi);
+        assert.equal(getInteractivePermissionRuntime().api, replacementApi);
+        assert.equal(
+          getInteractivePermissionRuntime().forwardingSessionId,
+          "replacement-after-failure",
+        );
+      } finally {
+        if (replacement) await replacement.cleanup();
         await parent.cleanup();
         if (previousForwardingDir === undefined)
           delete process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
