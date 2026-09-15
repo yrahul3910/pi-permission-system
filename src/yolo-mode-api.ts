@@ -25,6 +25,7 @@ const INTERACTIVE_RUNTIME_KEY = Symbol.for(
 interface InteractivePermissionRuntime {
   api: PiPermissionSystemRuntimeApi | null;
   forwardingSessionId: string | null;
+  stopForwarding: (() => void) | null;
 }
 
 type GlobalWithPermissionSystemRuntimeApi = typeof globalThis & {
@@ -40,6 +41,7 @@ export function getInteractivePermissionRuntime(): InteractivePermissionRuntime 
   return (globalScope[INTERACTIVE_RUNTIME_KEY] ??= {
     api: null,
     forwardingSessionId: null,
+    stopForwarding: null,
   });
 }
 

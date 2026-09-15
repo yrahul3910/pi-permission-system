@@ -1558,6 +1558,7 @@ type ProcessForwardedPermissionRequestsOptions = {
   preserveLocation?: boolean;
   turnRuntime?: TurnRuntimeTracker;
   getConfig?: () => PermissionSystemExtensionConfig;
+  signal?: AbortSignal;
 };
 
 /** Resolve forwarded requests with the receiving session's current settings. */
@@ -1565,7 +1566,7 @@ export async function processForwardedPermissionRequests(
   ctx: ExtensionContext,
   options: ProcessForwardedPermissionRequestsOptions = {},
 ): Promise<void> {
-  if (!ctx.hasUI) {
+  if (!ctx.hasUI || options.signal?.aborted) {
     return;
   }
 
@@ -1600,6 +1601,8 @@ export async function processForwardedPermissionRequests(
       };
     }),
   );
+
+  if (options.signal?.aborted) return;
 
   for (const { requestPath, request } of pendingRequests) {
     if (!request) {
@@ -1730,6 +1733,9 @@ export async function processForwardedPermissionRequests(
         decision = { approved: false, state: "denied" };
       }
     }
+
+    // A replacement owner may have taken over while this dialog was pending.
+    if (options.signal?.aborted) return;
 
     // The child may have timed out or removed its request while the dialog was
     // queued or visible. It can no longer consume a response in either case.
@@ -1865,6 +1871,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   let lastPromptStateCacheKey: string | null = null;
   let lastPromptStateCacheResult: CachedPromptStateResult | null = null;
   let permissionForwardingContext: ExtensionContext | null = null;
+  let permissionForwardingController = new AbortController();
   let permissionForwardingWatcher: FSWatcher | null = null;
   let permissionForwardingFallbackTimer: NodeJS.Timeout | null = null;
   let permissionForwardingScanTimer: NodeJS.Timeout | null = null;
@@ -2065,6 +2072,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     toggleYoloMode: (options?: YoloModeControlOptions) =>
       setYoloModeFromRuntimeApi(!sessionConfig.yoloMode, options),
   };
+  // Standalone sessions expose their API before session_start. In-process
+  // children load after the interactive parent has claimed ownership.
   if (!interactiveRuntime.api) registerPiPermissionSystemRuntimeApi(runtimeApi);
 
   // Entry renderers and their live `entry_appended` events arrived after some
@@ -2340,6 +2349,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
 
   const runForwardedPermissionRequestScan = (): void => {
+    if (!runtimeApi || interactiveRuntime.api !== runtimeApi) {
+      stopForwardedPermissionPolling();
+      return;
+    }
     const currentContext = permissionForwardingContext;
     if (!currentContext) {
       return;
@@ -2351,11 +2364,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     isProcessingForwardedRequests = true;
+    const signal = permissionForwardingController.signal;
     void processForwardedPermissionRequests(currentContext, {
       preserveLocation: true,
       turnRuntime,
       getConfig: () => sessionConfig,
+      signal,
     }).finally(() => {
+      if (signal.aborted) return;
       isProcessingForwardedRequests = false;
       if (pendingForwardedRequestScan) {
         pendingForwardedRequestScan = false;
@@ -2365,7 +2381,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
 
   const queueForwardedPermissionRequestScan = (): void => {
-    if (!permissionForwardingContext || permissionForwardingScanTimer) {
+    if (
+      !permissionForwardingContext ||
+      permissionForwardingScanTimer ||
+      permissionForwardingController.signal.aborted
+    ) {
       return;
     }
 
@@ -2376,7 +2396,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
 
   const startPermissionForwardingFallbackTimer = (): void => {
-    if (permissionForwardingFallbackTimer) {
+    if (
+      permissionForwardingFallbackTimer ||
+      permissionForwardingController.signal.aborted
+    ) {
       return;
     }
 
@@ -2390,6 +2413,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
 
   const stopForwardedPermissionPolling = (): void => {
+    permissionForwardingController.abort();
     closePermissionForwardingWatcher();
     stopPermissionForwardingFallbackTimer();
     if (permissionForwardingScanTimer) {
@@ -2425,8 +2449,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // Keep the working owner if a replacement cannot prepare its directories.
     // The watcher or fallback timer is armed below in this same synchronous pass.
     if (claimOwnership) {
+      interactiveRuntime.stopForwarding?.();
       interactiveRuntime.api = runtimeApi;
+      interactiveRuntime.stopForwarding = stopForwardedPermissionPolling;
       registerPiPermissionSystemRuntimeApi(runtimeApi);
+    }
+    if (permissionForwardingController.signal.aborted) {
+      permissionForwardingController = new AbortController();
     }
     interactiveRuntime.forwardingSessionId = sessionId;
 
@@ -2617,6 +2646,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     if (interactiveRuntime.api === runtimeApi) {
       interactiveRuntime.api = null;
       interactiveRuntime.forwardingSessionId = null;
+      interactiveRuntime.stopForwarding = null;
     }
     if (runtimeApi) unregisterPiPermissionSystemRuntimeApi(runtimeApi);
     explicitlyRequestedSkillNames.clear();

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -142,6 +142,7 @@ type ExtensionHarnessOptions = {
   factory?: typeof piPermissionSystemExtension;
   cwd?: string;
   hasUI?: boolean;
+  select?: () => Promise<string | undefined>;
   selectResponse?: string;
   inputResponse?: string;
   statusUpdates?: Array<{ key: string; value: string | undefined }>;
@@ -315,7 +316,7 @@ function createMockContext(
       },
       select: async (title: string): Promise<string | undefined> => {
         prompts.push(title);
-        return options.selectResponse ?? "Allow Once";
+        return options.select ? options.select() : options.selectResponse ?? "Allow Once";
       },
       input: async (): Promise<string | undefined> => options.inputResponse,
     },
@@ -671,6 +672,177 @@ await runAsyncTest(
     });
   },
 );
+
+function controlledDialog() {
+  let announce: (() => void) | undefined;
+  let answer: ((choice: string) => void) | undefined;
+  const started = new Promise<void>((fulfill) => {
+    announce = fulfill;
+  });
+  const decision = new Promise<string>((fulfill) => {
+    answer = fulfill;
+  });
+  assert.ok(announce);
+  assert.ok(answer);
+  const markStarted = announce;
+  return {
+    started,
+    answer,
+    select: () => {
+      markStarted();
+      return decision;
+    },
+  };
+}
+
+function withinTestDeadline<T>(pending: Promise<T>): Promise<T> {
+  return Promise.race([
+    pending,
+    new Promise<never>((_resolve, reject) => {
+      AbortSignal.timeout(5000).addEventListener(
+        "abort",
+        () => reject(new Error("permission test timed out")),
+        { once: true },
+      );
+    }),
+  ]);
+}
+
+for (const oldYolo of [true, false]) {
+  await runAsyncTest(
+    `Same-session handoff retires the old poller with YOLO ${oldYolo}`,
+    async () => {
+      await withIsolatedSubagentEnv(async () => {
+        const parent = createToolCallHarness({}, ["write"]);
+        const previousForwardingDir =
+          process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+        process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] = parent.baseDir;
+        const oldDialog = controlledDialog();
+        const newDialog = controlledDialog();
+        let replacement: ExtensionHarness | undefined;
+        let child: ExtensionHarness | undefined;
+        try {
+          await parent.handlers.session_start?.(
+            { reason: "startup" },
+            createMockContext(parent.cwd, parent.prompts, {
+              hasUI: true,
+              select: oldDialog.select,
+            }),
+          );
+          const parentApi = getPiPermissionSystemRuntimeApi();
+          assert.ok(parentApi);
+          parentApi.setYoloMode(oldYolo);
+          const childHarness = createToolCallHarness(
+            { tools: { write: "ask" } },
+            ["write"],
+          );
+          child = childHarness;
+          const childContext = {
+            ...createMockContext(childHarness.cwd, childHarness.prompts),
+            getSystemPrompt: () => '<active_agent name="worker"/>',
+            sessionManager: {
+              getEntries: () => [],
+              getSessionId: () => "handoff-child",
+              getSessionDir: () => childHarness.cwd,
+            },
+          };
+          let result: ReturnType<MockHandler> = undefined;
+          if (!oldYolo) {
+            result = childHarness.handlers.tool_call?.(
+              {
+                toolName: "write",
+                toolCallId: "before-handoff",
+                input: {
+                  path: join(childHarness.cwd, "before.ts"),
+                  content: "fixture",
+                },
+              },
+              childContext,
+            );
+            await withinTestDeadline(oldDialog.started);
+          }
+          const factory = await importIsolatedExtension(
+            join(parent.baseDir, "same-session-replacement-module"),
+          );
+          const candidate = createToolCallHarness({}, ["write"], { factory });
+          replacement = candidate;
+          await candidate.handlers.session_start?.(
+            { reason: "startup" },
+            createMockContext(candidate.cwd, candidate.prompts, {
+              hasUI: true,
+              select: newDialog.select,
+            }),
+          );
+          const replacementApi = getPiPermissionSystemRuntimeApi();
+          assert.ok(replacementApi);
+          assert.equal(replacementApi.getYoloMode(), false);
+          if (oldYolo) {
+            result = childHarness.handlers.tool_call?.(
+              {
+                toolName: "write",
+                toolCallId: "after-handoff",
+                input: {
+                  path: join(childHarness.cwd, "after.ts"),
+                  content: "fixture",
+                },
+              },
+              childContext,
+            );
+          }
+          await withinTestDeadline(
+            Promise.race([
+              newDialog.started,
+              Promise.resolve(result).then((decision) => {
+                assert.equal(
+                  decision?.block,
+                  true,
+                  "the retired owner approved before the replacement answered",
+                );
+              }),
+            ]),
+          );
+          oldDialog.answer("Allow Once");
+          await new Promise<void>((fulfill) => setImmediate(fulfill));
+          const location = createPermissionForwardingLocation(
+            join(parent.baseDir, "sessions", "permission-forwarding"),
+            "test-session",
+          );
+          assert.equal(
+            readdirSync(location.requestsDir).filter((name) =>
+              name.endsWith(".json"),
+            ).length,
+            1,
+            "the retired owner must not consume the live owner's request",
+          );
+          assert.deepEqual(
+            readdirSync(location.responsesDir),
+            [],
+            "the retired owner must not publish an approval",
+          );
+          newDialog.answer("Reject");
+          const decision = await withinTestDeadline(Promise.resolve(result));
+          assert.equal(
+            decision?.block,
+            true,
+            "only the replacement's rejection should reach the child",
+          );
+          assert.equal(candidate.prompts.length, 1);
+        } finally {
+          oldDialog.answer("Reject");
+          newDialog.answer("Reject");
+          if (replacement) await replacement.cleanup();
+          if (child) await child.cleanup();
+          await parent.cleanup();
+          if (previousForwardingDir === undefined)
+            delete process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+          else
+            process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] =
+              previousForwardingDir;
+        }
+      });
+    },
+  );
+}
 
 await runAsyncTest(
   "Failed forwarding setup preserves the live owner until a replacement is ready",
