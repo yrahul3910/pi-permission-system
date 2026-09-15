@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -43,7 +44,7 @@ import {
   findSkillPathMatch,
 } from "../src/skill-prompt-sanitizer.js";
 import { checkRequestedToolRegistration, getToolNameFromValue } from "../src/tool-registry.js";
-import { getPiPermissionSystemRuntimeApi } from "../src/yolo-mode-api.js";
+import { getInteractivePermissionRuntime, getPiPermissionSystemRuntimeApi } from "../src/yolo-mode-api.js";
 import { getPermissionSystemStatus } from "../src/status.js";
 import { sanitizeAvailableToolsSection } from "../src/system-prompt-sanitizer.js";
 import type { AgentPermissions, GlobalPermissionConfig } from "../src/types.js";
@@ -138,6 +139,7 @@ type ExtensionHarness = {
 };
 
 type ExtensionHarnessOptions = {
+  factory?: typeof piPermissionSystemExtension;
   cwd?: string;
   hasUI?: boolean;
   selectResponse?: string;
@@ -212,7 +214,7 @@ function createToolCallHarness(
   mkdirSync(cwd, { recursive: true });
   writeFileSync(
     extensionConfigPath,
-    `${JSON.stringify({ ...config, ...(options.extensionConfig ?? DEFAULT_EXTENSION_CONFIG) }, null, 2)}\n`,
+    `${JSON.stringify({ ...config, ...DEFAULT_EXTENSION_CONFIG, ...options.extensionConfig, desktopNotifications: false }, null, 2)}\n`,
     "utf8",
   );
 
@@ -220,7 +222,10 @@ function createToolCallHarness(
   process.env[CONFIG_PATH_ENV_KEY] = extensionConfigPath;
   process.env[LOGS_DIR_ENV_KEY] = logsDir;
   try {
-    piPermissionSystemExtension({
+    const factory = options.factory ?? piPermissionSystemExtension;
+    // SAFETY: This fixture supplies the ExtensionAPI members exercised by the
+    // extension; captured handlers run only with the mock contexts below.
+    factory({
       on: (name: string, handler: MockHandler): void => {
         registeredEvents.push(name);
         handlers[name] = handler;
@@ -491,6 +496,269 @@ await runAsyncTest(
       else
         process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] =
           previousForwardingDir;
+    }
+  },
+);
+
+async function importIsolatedExtension(directory: string) {
+  mkdirSync(directory, { recursive: true });
+  cpSync(
+    fileURLToPath(new URL("../src", import.meta.url)),
+    join(directory, "src"),
+    { recursive: true },
+  );
+  symlinkSync(
+    fileURLToPath(new URL("../node_modules", import.meta.url)),
+    join(directory, "node_modules"),
+    "dir",
+  );
+  writeFileSync(join(directory, "package.json"), '{"type":"module"}\n');
+  const extension: typeof import("../src/index.js") = await import(
+    pathToFileURL(join(directory, "src/index.ts")).href
+  );
+  return extension.default;
+}
+
+await runAsyncTest(
+  "Fresh worktree and plain module instances forward asks to the live parent",
+  async () => {
+    await withIsolatedSubagentEnv(async () => {
+      const parent = createToolCallHarness(
+        { tools: { write: "ask", edit: "ask", read: "allow" } },
+        ["write", "edit", "read", "bash", "StructuredOutput"],
+      );
+      const previousForwardingDir =
+        process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+      process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] = parent.baseDir;
+      try {
+        await parent.handlers.session_start?.(
+          { reason: "startup" },
+          createMockContext(parent.cwd, parent.prompts, { hasUI: true }),
+        );
+        const parentApi = getPiPermissionSystemRuntimeApi();
+        assert.ok(parentApi);
+        parentApi.setYoloMode(true);
+        for (const name of ["worktree-a", "worktree-b", "plain"]) {
+          const factory = await importIsolatedExtension(
+            join(parent.baseDir, "modules", name),
+          );
+          assert.notEqual(factory, piPermissionSystemExtension);
+          const cwd =
+            name === "plain"
+              ? parent.cwd
+              : join(parent.baseDir, "worktrees", name);
+          const child = createToolCallHarness(
+            {
+              tools: {
+                write: "ask",
+                edit: "ask",
+                read: "allow",
+                [`write:${join(cwd, "blocked.ts")}`]: "deny",
+              },
+            },
+            ["write", "edit", "read", "bash", "StructuredOutput"],
+            { factory, cwd },
+          );
+          const context = {
+            ...createMockContext(cwd, child.prompts),
+            getSystemPrompt: () => '<active_agent name="worker"/>',
+            sessionManager: {
+              getEntries: () => [],
+              getSessionId: () => name,
+              getSessionDir: () => cwd,
+            },
+          };
+          try {
+            assert.equal(
+              getPiPermissionSystemRuntimeApi(),
+              parentApi,
+              "loading a child must not replace the parent API",
+            );
+            await child.handlers.session_start?.(
+              { reason: "startup" },
+              context,
+            );
+            for (const [toolName, input] of [
+              ["write", { path: join(cwd, "file.ts"), content: "fixture" }],
+              [
+                "edit",
+                {
+                  path: join(cwd, "file.ts"),
+                  edits: [{ oldText: "fixture", newText: "edited" }],
+                },
+              ],
+              ["read", { path: join(parent.baseDir, "external", "file.txt") }],
+              ["bash", { command: "git branch --show-current" }],
+              ["StructuredOutput", { result: "done" }],
+            ] as const) {
+              const result = await child.handlers.tool_call?.(
+                { toolName, toolCallId: `${name}-${toolName}`, input },
+                context,
+              );
+              assert.deepEqual(result, {}, `${name}: ${toolName}`);
+            }
+            const protectedResult = await child.handlers.tool_call?.(
+              {
+                toolName: "read",
+                toolCallId: `${name}-protected`,
+                input: { path: join(cwd, ".env") },
+              },
+              context,
+            );
+            assert.equal(protectedResult?.block, true);
+            const denied = await child.handlers.tool_call?.(
+              {
+                toolName: "write",
+                toolCallId: `${name}-denied`,
+                input: { path: join(cwd, "blocked.ts"), content: "fixture" },
+              },
+              context,
+            );
+            assert.equal(
+              denied?.block,
+              true,
+              "parent YOLO cannot override a child's explicit deny",
+            );
+            const unrelated = await child.handlers.tool_call?.(
+              {
+                toolName: "write",
+                toolCallId: `${name}-unrelated`,
+                input: { path: join(cwd, "unrelated.ts"), content: "fixture" },
+              },
+              { ...context, getSystemPrompt: () => "" },
+            );
+            assert.equal(
+              unrelated?.block,
+              true,
+              "headless sessions without child metadata must not inherit parent permissions",
+            );
+            parentApi.setYoloMode(false);
+            const prompted = await child.handlers.tool_call?.(
+              {
+                toolName: "write",
+                toolCallId: `${name}-prompted`,
+                input: { path: join(cwd, "prompted.ts"), content: "fixture" },
+              },
+              context,
+            );
+            assert.deepEqual(prompted, {});
+            assert.equal(
+              parent.prompts.length,
+              1,
+              "YOLO off must forward to the parent's dialog",
+            );
+            parent.prompts.length = 0;
+            parentApi.setYoloMode(true);
+            assert.deepEqual(child.prompts, []);
+          } finally {
+            await child.cleanup();
+          }
+          assert.equal(
+            getPiPermissionSystemRuntimeApi(),
+            parentApi,
+            "child shutdown must preserve the parent API",
+          );
+          assert.equal(parentApi.getYoloMode(), true);
+        }
+      } finally {
+        await parent.cleanup();
+        if (previousForwardingDir === undefined)
+          delete process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY];
+        else
+          process.env[PERMISSION_FORWARDING_AGENT_DIR_ENV_KEY] =
+            previousForwardingDir;
+      }
+    });
+  },
+);
+
+await runAsyncTest(
+  "Only the current interactive owner can clear a cross-module registration",
+  async () => {
+    const parent = createToolCallHarness({}, ["read"]);
+    let replacement: ExtensionHarness | undefined;
+    try {
+      await parent.handlers.session_start?.(
+        { reason: "startup" },
+        createMockContext(parent.cwd, parent.prompts, { hasUI: true }),
+      );
+      const oldApi = getPiPermissionSystemRuntimeApi();
+      assert.ok(oldApi);
+      const factory = await importIsolatedExtension(
+        join(parent.baseDir, "replacement-module"),
+      );
+      const replacementHarness = createToolCallHarness({}, ["read"], {
+        factory,
+      });
+      replacement = replacementHarness;
+      await replacement.handlers.session_start?.(
+        { reason: "startup" },
+        {
+          ...createMockContext(replacement.cwd, replacement.prompts, {
+            hasUI: true,
+          }),
+          sessionManager: {
+            getEntries: () => [],
+            getSessionId: () => "replacement-session",
+            getSessionDir: () => replacementHarness.cwd,
+          },
+        },
+      );
+      const replacementApi = getPiPermissionSystemRuntimeApi();
+      assert.ok(replacementApi);
+      assert.notEqual(replacementApi, oldApi);
+      replacementApi.setYoloMode(true);
+      await parent.handlers.input?.(
+        { text: "fixture" },
+        createMockContext(parent.cwd, parent.prompts, { hasUI: true }),
+      );
+      assert.equal(
+        getInteractivePermissionRuntime().forwardingSessionId,
+        "replacement-session",
+        "an old UI binding cannot replace the current forwarding target",
+      );
+      await parent.handlers.session_shutdown?.(
+        {},
+        createMockContext(parent.cwd, parent.prompts),
+      );
+      await parent.handlers.session_shutdown?.(
+        {},
+        createMockContext(parent.cwd, parent.prompts),
+      );
+      assert.equal(getPiPermissionSystemRuntimeApi(), replacementApi);
+      assert.equal(replacementApi.getYoloMode(), true);
+      await replacement.handlers.session_shutdown?.(
+        {},
+        createMockContext(replacement.cwd, replacement.prompts),
+      );
+      assert.equal(getPiPermissionSystemRuntimeApi(), null);
+      const orphan = createToolCallHarness({ tools: { read: "ask" } }, [
+        "read",
+      ]);
+      try {
+        const context = {
+          ...createMockContext(orphan.cwd, orphan.prompts),
+          getSystemPrompt: () => '<active_agent name="worker"/>',
+        };
+        const result = await orphan.handlers.tool_call?.(
+          {
+            toolName: "read",
+            toolCallId: "orphan-read",
+            input: { path: join(orphan.cwd, "file.txt") },
+          },
+          context,
+        );
+        assert.equal(
+          result?.block,
+          true,
+          "a stopped parent cannot approve later requests",
+        );
+      } finally {
+        await orphan.cleanup();
+      }
+    } finally {
+      if (replacement) await replacement.cleanup();
+      await parent.cleanup();
     }
   },
 );
@@ -4181,7 +4449,7 @@ await runAsyncTest("Forwarded permission warning is only shown when debug config
       "utf8",
     );
 
-    setExtensionConfig({ debug: false, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 30 });
+    setExtensionConfig({ debug: false, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: false, forwardedPromptTimeoutSeconds: 30 });
     await processForwardedPermissionRequests(
       createMockContext(baseDir, [], { hasUI: true, notifications }) as never,
       { preserveLocation: true },
@@ -4207,7 +4475,7 @@ await runAsyncTest("Forwarded permission warning is only shown when debug config
       "utf8",
     );
 
-    setExtensionConfig({ debug: true, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 30 });
+    setExtensionConfig({ debug: true, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: false, forwardedPromptTimeoutSeconds: 30 });
     await processForwardedPermissionRequests(
       createMockContext(baseDir, [], { hasUI: true, notifications }) as never,
       { preserveLocation: true },
@@ -4252,7 +4520,7 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
       "utf8",
     );
 
-    setExtensionConfig({ debug: false, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: 45 });
+    setExtensionConfig({ debug: false, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: false, forwardedPromptTimeoutSeconds: 45 });
     await processForwardedPermissionRequests(
       createMockContext(baseDir, prompts45, { hasUI: true, selectResponse: "Allow Once" }) as never,
       { preserveLocation: true },
@@ -4279,7 +4547,7 @@ await runAsyncTest("Forwarded permission prompt reflects configured timeout", as
       "utf8",
     );
 
-    setExtensionConfig({ debug: false, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: true, forwardedPromptTimeoutSeconds: null });
+    setExtensionConfig({ debug: false, yoloMode: false, yoloBypassProtectedPaths: false, desktopNotifications: false, forwardedPromptTimeoutSeconds: null });
     await processForwardedPermissionRequests(
       createMockContext(baseDir, promptsUnlimited, { hasUI: true, selectResponse: "Allow Once" }) as never,
       { preserveLocation: true },

@@ -131,6 +131,7 @@ import type { BashEvaluation, PermissionCheckResult } from "./types.js";
 import { PERMISSION_SYSTEM_STATUS_KEY, syncPermissionSystemStatus } from "./status.js";
 import { canResolveAskPermissionRequest, shouldAutoApprovePermissionState } from "./yolo-mode.js";
 import {
+  getInteractivePermissionRuntime,
   registerPiPermissionSystemRuntimeApi,
   unregisterPiPermissionSystemRuntimeApi,
   type PiPermissionSystemRuntimeApi,
@@ -244,19 +245,8 @@ const DUPLICATE_PERMISSION_PROMPT_CACHE_MAX_ENTRIES = 128;
 let extensionConfig: PermissionSystemExtensionConfig = {
   ...DEFAULT_EXTENSION_CONFIG,
 };
-let interactiveRuntimeApi: PiPermissionSystemRuntimeApi | null = null;
+const interactiveRuntime = getInteractivePermissionRuntime();
 let focusTracker: TerminalFocusTracker | null = null;
-
-// Session id of the interactive (hasUI) session in this process, if any.
-//
-// In-process subagents (e.g. tintinweb/pi-subagents) run concurrently in the
-// same Node process with no env hints, so process.env cannot name the session a
-// non-UI child should forward its `ask` prompts to. The interactive session
-// records itself here so an in-process child can discover its forwarding parent.
-// This is set only from the hasUI branch and is deliberately never cleared on
-// the shared stop path — that path also runs inside child bindings, where
-// clearing would erase the parent's id out from under a concurrent subagent.
-let interactiveForwardingSessionId: string | null = null;
 
 const DESKTOP_NOTIFICATION_TITLE = "Pi: permission required";
 const DESKTOP_NOTIFICATION_BODY_MAX_LENGTH = 180;
@@ -1433,7 +1423,7 @@ async function waitForForwardedPermissionApproval(
     isSubagent: isSubagentExecutionContext(ctx),
     currentSessionId: requesterSessionId,
     env: process.env,
-    fallbackTargetSessionId: interactiveForwardingSessionId,
+    fallbackTargetSessionId: interactiveRuntime.forwardingSessionId,
   });
 
   if (!targetSessionId) {
@@ -2075,7 +2065,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     toggleYoloMode: (options?: YoloModeControlOptions) =>
       setYoloModeFromRuntimeApi(!sessionConfig.yoloMode, options),
   };
-  if (!interactiveRuntimeApi) registerPiPermissionSystemRuntimeApi(runtimeApi);
+  if (!interactiveRuntime.api) registerPiPermissionSystemRuntimeApi(runtimeApi);
 
   // Entry renderers and their live `entry_appended` events arrived after some
   // supported Pi versions. Feature-detect them so older runtimes keep their
@@ -2413,7 +2403,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
 
   const startForwardedPermissionPolling = (ctx: ExtensionContext): void => {
-    if (!ctx.hasUI || isSubagentExecutionContext(ctx)) {
+    if (
+      !ctx.hasUI ||
+      isSubagentExecutionContext(ctx) ||
+      interactiveRuntime.api !== runtimeApi
+    ) {
       stopForwardedPermissionPolling();
       return;
     }
@@ -2430,7 +2424,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // location is confirmed — the request watcher is armed below in this same
     // synchronous pass — so we never advertise a parent whose watcher never
     // started, which would leave a child's forwarded request to time out.
-    interactiveForwardingSessionId = sessionId;
+    interactiveRuntime.forwardingSessionId = sessionId;
 
     permissionForwardingContext = ctx;
     if (
@@ -2561,7 +2555,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const refreshSessionRuntimeState = (ctx: ExtensionContext): void => {
     runtimeContext = ctx;
     if (ctx.hasUI && runtimeApi) {
-      interactiveRuntimeApi = runtimeApi;
+      interactiveRuntime.api = runtimeApi;
+      interactiveRuntime.forwardingSessionId = null;
       registerPiPermissionSystemRuntimeApi(runtimeApi);
     }
     resetShownWarnings();
@@ -2620,11 +2615,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     recentPermissionPromptDecisions.clear();
     resetShownWarnings();
     runtimeContext = null;
-    if (interactiveRuntimeApi === runtimeApi) {
-      interactiveRuntimeApi = null;
-      interactiveForwardingSessionId = null;
+    if (interactiveRuntime.api === runtimeApi) {
+      interactiveRuntime.api = null;
+      interactiveRuntime.forwardingSessionId = null;
     }
-    unregisterPiPermissionSystemRuntimeApi(runtimeApi ?? undefined);
+    if (runtimeApi) unregisterPiPermissionSystemRuntimeApi(runtimeApi);
     explicitlyRequestedSkillNames.clear();
     runtimeApi = null;
     invalidateAgentStartCache();
