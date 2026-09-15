@@ -37,6 +37,7 @@ import {
   stripUnsupportedTemperatureFromPayload,
 } from "../src/model-option-compatibility.js";
 import { PermissionManager } from "../src/permission-manager.js";
+import type { PermissionDecisionUiSelectOptions } from "../src/permission-dialog.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
 import {
   parseAllSkillPromptSections,
@@ -142,7 +143,7 @@ type ExtensionHarnessOptions = {
   factory?: typeof piPermissionSystemExtension;
   cwd?: string;
   hasUI?: boolean;
-  select?: () => Promise<string | undefined>;
+  select?: (options?: PermissionDecisionUiSelectOptions) => Promise<string | undefined>;
   selectResponse?: string;
   inputResponse?: string;
   statusUpdates?: Array<{ key: string; value: string | undefined }>;
@@ -298,9 +299,16 @@ function createMockContext(
     cwd,
     hasUI: options.hasUI === true,
     sessionManager: {
-      getEntries: (): unknown[] => options.activeAgentName === undefined
-        ? []
-        : [{ type: "custom", customType: "active_agent", data: { name: options.activeAgentName } }],
+      getEntries: (): unknown[] =>
+        options.activeAgentName === undefined
+          ? []
+          : [
+              {
+                type: "custom",
+                customType: "active_agent",
+                data: { name: options.activeAgentName },
+              },
+            ],
       getSessionId: (): string => "test-session",
       getSessionDir: (): string => cwd,
     },
@@ -314,9 +322,15 @@ function createMockContext(
       setWorkingMessage: (message?: string): void => {
         options.workingMessages?.push(message);
       },
-      select: async (title: string): Promise<string | undefined> => {
+      select: async (
+        title: string,
+        _choices: string[],
+        dialogOptions?: PermissionDecisionUiSelectOptions,
+      ): Promise<string | undefined> => {
         prompts.push(title);
-        return options.select ? options.select() : options.selectResponse ?? "Allow Once";
+        return options.select
+          ? options.select(dialogOptions)
+          : (options.selectResponse ?? "Allow Once");
       },
       input: async (): Promise<string | undefined> => options.inputResponse,
     },
@@ -675,20 +689,39 @@ await runAsyncTest(
 
 function controlledDialog() {
   let announce: (() => void) | undefined;
-  let answer: ((choice: string) => void) | undefined;
+  let answer: ((choice: string | undefined) => void) | undefined;
   const started = new Promise<void>((fulfill) => {
     announce = fulfill;
   });
-  const decision = new Promise<string>((fulfill) => {
+  const decision = new Promise<string | undefined>((fulfill) => {
     answer = fulfill;
   });
   assert.ok(announce);
   assert.ok(answer);
   const markStarted = announce;
+  const settle = answer;
+  let visible = false;
+  let signal: AbortSignal | undefined;
+  const finish = (choice: string | undefined) => {
+    visible = false;
+    signal?.removeEventListener("abort", onAbort);
+    settle(choice);
+  };
+  const onAbort = () => finish(undefined);
   return {
     started,
-    answer,
-    select: () => {
+    answer: finish,
+    get visible() {
+      return visible;
+    },
+    select: (options?: PermissionDecisionUiSelectOptions) => {
+      signal = options?.signal;
+      if (signal?.aborted) {
+        finish(undefined);
+        return decision;
+      }
+      visible = true;
+      signal?.addEventListener("abort", onAbort, { once: true });
       markStarted();
       return decision;
     },
@@ -770,7 +803,14 @@ for (const oldYolo of [true, false]) {
             { reason: "startup" },
             createMockContext(candidate.cwd, candidate.prompts, {
               hasUI: true,
-              select: newDialog.select,
+              select: (options) => {
+                assert.equal(
+                  oldDialog.visible,
+                  false,
+                  "the previous selector must close before the replacement opens",
+                );
+                return newDialog.select(options);
+              },
             }),
           );
           const replacementApi = getPiPermissionSystemRuntimeApi();

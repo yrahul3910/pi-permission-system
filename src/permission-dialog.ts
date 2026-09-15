@@ -9,6 +9,7 @@ export type PermissionPromptDecision = {
 };
 
 export interface PermissionDecisionUiSelectOptions {
+  signal?: AbortSignal;
   timeout?: number;
 }
 
@@ -22,6 +23,7 @@ export interface PermissionDecisionUi {
 }
 
 export type PermissionDecisionRequestOptions = {
+  signal?: AbortSignal;
   /** Time budget for waiting in the queue and answering the dialog. */
   timeoutMs?: number;
   /** Absolute request expiration, in milliseconds since the Unix epoch. */
@@ -275,6 +277,7 @@ export async function requestPermissionDecisionFromUi(
   message: string,
   options: PermissionDecisionRequestOptions = {},
 ): Promise<PermissionPromptDecision> {
+  if (options.signal?.aborted) return createRejectDecision();
   const promptDeadline =
     options.timeoutMs !== undefined &&
     Number.isFinite(options.timeoutMs) &&
@@ -300,14 +303,23 @@ export async function requestPermissionDecisionFromUi(
   // Pi has one editor slot for selectors and inputs. Keep the entire decision,
   // including a rejection reason, visible until it resolves before opening another.
   let queueTimer: NodeJS.Timeout | undefined;
+  let cancelQueued: (() => void) | undefined;
   let isReady = true;
   try {
     if (previous) {
-      if (deadline === undefined) {
-        await previous;
-      } else {
-        isReady = await Promise.race([
-          previous.then(() => true),
+      const waits = [previous.then(() => true)];
+      if (options.signal) {
+        waits.push(
+          new Promise<boolean>((resolve) => {
+            cancelQueued = () => resolve(false);
+            options.signal?.addEventListener("abort", cancelQueued, {
+              once: true,
+            });
+          }),
+        );
+      }
+      if (deadline !== undefined) {
+        waits.push(
           new Promise<boolean>((resolve) => {
             const expire = (): void => {
               const remainingMs = deadline - Date.now();
@@ -320,12 +332,15 @@ export async function requestPermissionDecisionFromUi(
             };
             expire();
           }),
-        ]);
+        );
       }
+      if (waits.length === 1) await previous;
+      else isReady = await Promise.race(waits);
     }
     clearTimeout(queueTimer);
     const remainingMs =
       deadline === undefined ? undefined : deadline - Date.now();
+    if (options.signal?.aborted) return createRejectDecision();
     if (!isReady || (remainingMs !== undefined && remainingMs <= 0)) {
       return createRejectDecision(options.timeoutDenialReason);
     }
@@ -336,7 +351,9 @@ export async function requestPermissionDecisionFromUi(
     });
   } finally {
     clearTimeout(queueTimer);
-    // Expiration ends this request's wait, but later dialogs must still wait for
+    if (cancelQueued)
+      options.signal?.removeEventListener("abort", cancelQueued);
+    // Cancellation or expiration ends this wait, but later dialogs must wait for
     // the predecessor to close before they can use Pi's editor slot.
     if (!isReady && previous) {
       void previous.then(release);
@@ -365,8 +382,9 @@ async function selectPermissionDecision(
   const selected = await ui.select(
     compactPermissionPromptForSelect(`${title}\n${message}`),
     decisionOptions,
-    selectOptions,
+    options.signal ? { ...selectOptions, signal: options.signal } : selectOptions,
   );
+  if (options.signal?.aborted) return createRejectDecision();
   if (options.expiresAt !== undefined && Date.now() >= options.expiresAt) {
     return createRejectDecision(options.timeoutDenialReason);
   }
@@ -400,13 +418,16 @@ async function selectPermissionDecision(
     if (remainingMs !== undefined && remainingMs <= 0) {
       return createRejectDecision(options.timeoutDenialReason);
     }
+    const inputOptions =
+      remainingMs === undefined ? undefined : { timeout: remainingMs };
     const denialReason = normalizePermissionDenialReason(
       await ui.input(
         `${title}\nShare why this request was denied (optional).`,
         "Reason shown back to the agent",
-        remainingMs === undefined ? undefined : { timeout: remainingMs },
+        options.signal ? { ...inputOptions, signal: options.signal } : inputOptions,
       ),
     );
+    if (options.signal?.aborted) return createRejectDecision();
     if (options.expiresAt !== undefined && Date.now() >= options.expiresAt) {
       return createRejectDecision(options.timeoutDenialReason);
     }

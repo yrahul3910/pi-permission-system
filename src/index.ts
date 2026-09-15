@@ -1721,6 +1721,7 @@ export async function processForwardedPermissionRequests(
               timeoutMs,
               expiresAt: request.expiresAt ?? undefined,
               timeoutDenialReason,
+              signal: options.signal,
             },
           );
         decision = await (options.turnRuntime?.pauseWhile(requestDecision) ??
