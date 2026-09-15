@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   requestPermissionDecisionFromUi,
   type PermissionDecisionUi,
+  type PermissionDecisionUiSelectOptions,
 } from "../src/permission-dialog.js";
 import { TurnRuntimeTracker } from "../src/turn-runtime.js";
 import { runAsyncTest } from "./test-harness.js";
@@ -15,11 +16,24 @@ function createDialogUi() {
   let fail: (error: Error) => void = () => {
     throw new Error("No visible permission dialog");
   };
-  const show = (title: string): Promise<string | undefined> => {
+  const show = (
+    title: string,
+    _choices?: string[] | string,
+    options?: PermissionDecisionUiSelectOptions,
+  ): Promise<string | undefined> => {
     shown.push(title);
     return new Promise((resolve, reject) => {
-      answer = resolve;
-      fail = reject;
+      const onAbort = () => answer(undefined);
+      answer = (value) => {
+        options?.signal?.removeEventListener("abort", onAbort);
+        resolve(value);
+      };
+      fail = (error) => {
+        options?.signal?.removeEventListener("abort", onAbort);
+        reject(error);
+      };
+      if (options?.signal?.aborted) answer(undefined);
+      else options?.signal?.addEventListener("abort", onAbort, { once: true });
     });
   };
   const ui: PermissionDecisionUi = { select: show, input: show };
@@ -29,6 +43,70 @@ function createDialogUi() {
     answer: (value: string | undefined) => answer(value),
     fail: (error: Error) => fail(error),
   };
+}
+
+await runAsyncTest("an aborted request never opens a dialog", async () => {
+  const dialog = createDialogUi();
+  const controller = new AbortController();
+  controller.abort();
+  const result = requestPermissionDecisionFromUi(dialog.ui, "Retired", "read", {
+    signal: controller.signal,
+  });
+  assert.deepEqual(dialog.shown, []);
+  assert.equal((await result).approved, false);
+});
+
+await runAsyncTest(
+  "canceling a queued request preserves its predecessor and queue position",
+  async () => {
+    const dialog = createDialogUi();
+    const first = requestPermissionDecisionFromUi(dialog.ui, "First", "read");
+    const controller = new AbortController();
+    const canceled = requestPermissionDecisionFromUi(
+      dialog.ui,
+      "Canceled",
+      "read",
+      { signal: controller.signal },
+    );
+    controller.abort();
+    assert.equal((await canceled).approved, false);
+    const next = requestPermissionDecisionFromUi(dialog.ui, "Next", "read");
+    await new Promise<void>((fulfill) => setImmediate(fulfill));
+    assert.deepEqual(dialog.shown, ["First\nread"]);
+    dialog.answer("Allow Once");
+    await first;
+    await new Promise<void>((fulfill) => setImmediate(fulfill));
+    assert.deepEqual(dialog.shown, ["First\nread", "Next\nread"]);
+    dialog.answer("Reject");
+    assert.equal((await next).approved, false);
+  },
+);
+
+for (const phase of ["selector", "reason"]) {
+  await runAsyncTest(
+    `canceling the visible ${phase} releases the dialog without a deadline`,
+    async () => {
+      const dialog = createDialogUi();
+      const controller = new AbortController();
+      const current = requestPermissionDecisionFromUi(
+        dialog.ui,
+        "Current",
+        "read",
+        { signal: controller.signal },
+      );
+      if (phase === "reason") {
+        dialog.answer("Reject with Reason");
+        await new Promise<void>((fulfill) => setImmediate(fulfill));
+        assert.match(dialog.shown.at(-1) ?? "", /Share why/);
+      }
+      controller.abort();
+      assert.equal((await current).approved, false);
+      const next = requestPermissionDecisionFromUi(dialog.ui, "Next", "read");
+      assert.equal(dialog.shown.at(-1), "Next\nread");
+      dialog.answer("Allow Once");
+      assert.equal((await next).approved, true);
+    },
+  );
 }
 
 await runAsyncTest(

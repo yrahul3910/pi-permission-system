@@ -101,7 +101,7 @@ function createRuntimeHarness(
   mkdirSync(cwd, { recursive: true });
   writeFileSync(
     extensionConfigPath,
-    `${JSON.stringify({ ...config, ...(options.extensionConfig ?? DEFAULT_EXTENSION_CONFIG) }, null, 2)}\n`,
+    `${JSON.stringify({ ...config, ...(options.extensionConfig ?? DEFAULT_EXTENSION_CONFIG), desktopNotifications: false }, null, 2)}\n`,
     "utf8",
   );
 
