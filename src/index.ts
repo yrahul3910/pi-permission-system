@@ -2414,6 +2414,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   };
 
   const stopForwardedPermissionPolling = (): void => {
+    // Handoff relies on Pi's select/input APIs dismissing synchronously on abort,
+    // before the replacement owner can open a dialog in the same editor slot.
     permissionForwardingController.abort();
     closePermissionForwardingWatcher();
     stopPermissionForwardingFallbackTimer();

@@ -9,6 +9,10 @@ export type PermissionPromptDecision = {
 };
 
 export interface PermissionDecisionUiSelectOptions {
+  /**
+   * Forwarded to Pi's ExtensionUIDialogOptions.signal. Owner handoff requires
+   * select/input to dismiss synchronously on abort and resolve with undefined.
+   */
   signal?: AbortSignal;
   timeout?: number;
 }
