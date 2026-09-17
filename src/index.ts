@@ -2621,27 +2621,28 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
   pi.on(
     "resources_discover",
-    async (event: ResourcesDiscoverEvent, _ctx: ExtensionContext) => {
+    async (event: ResourcesDiscoverEvent, ctx: ExtensionContext) => {
       if (event.reason === "reload") {
         resetShownWarnings();
         recentPermissionPromptDecisions.clear();
-        refreshExtensionConfig(runtimeContext ?? undefined);
-        permissionManager = runtimeContext
-          ? createPermissionManagerForCwd(runtimeContext.cwd, notifyWarning)
-          : createPermissionManagerForCwd(undefined, notifyWarning);
+        refreshExtensionConfig(ctx);
+        permissionManager = createPermissionManagerForCwd(
+          ctx.cwd,
+          notifyWarning,
+        );
         invalidateAgentStartCache();
         writeDebugEntry("lifecycle.reload", {
           triggeredBy: "resources_discover",
           reason: event.reason,
-          cwd: runtimeContext?.cwd ?? null,
+          cwd: ctx.cwd,
         });
       }
     },
   );
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (_event, ctx: ExtensionContext) => {
     turnRuntime.stop();
-    runtimeContext?.ui.setStatus(PERMISSION_SYSTEM_STATUS_KEY, undefined);
+    ctx.ui.setStatus(PERMISSION_SYSTEM_STATUS_KEY, undefined);
     sessionApprovals.clear();
     recentPermissionPromptDecisions.clear();
     resetShownWarnings();

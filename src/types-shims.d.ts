@@ -177,6 +177,12 @@ declare module "@earendil-works/pi-coding-agent" {
     reason?: "start" | "reload" | string;
   }
 
+  export interface SessionShutdownEvent {
+    type: "session_shutdown";
+    reason: "quit" | "reload" | "new" | "resume" | "fork";
+    targetSessionFile?: string;
+  }
+
   export interface ResourcesDiscoverEvent {
     reason?: "discover" | "reload" | string;
   }
@@ -201,7 +207,10 @@ declare module "@earendil-works/pi-coding-agent" {
   export interface ExtensionAPI {
     on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
     on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent>): void;
-    on(event: "session_shutdown", handler: () => Promise<void> | void): void;
+    on(
+      event: "session_shutdown",
+      handler: ExtensionHandler<SessionShutdownEvent>,
+    ): void;
     on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
     on(event: "agent_end", handler: () => Promise<void> | void): void;
     on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;

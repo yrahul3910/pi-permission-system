@@ -376,6 +376,48 @@ await runAsyncTest("Extension registers only one supported session_start lifecyc
   }
 });
 
+for (const lifecycle of ["resources_discover", "session_shutdown"]) {
+  await runAsyncTest(
+    `${lifecycle} uses its current context after reload`,
+    async () => {
+      const statusUpdates: Array<{ key: string; value: string | undefined }> =
+        [];
+      const harness = createToolCallHarness({}, []);
+      const previousContext = createMockContext(harness.cwd, harness.prompts);
+      let stale = false;
+      const guardedContext = new Proxy(previousContext, {
+        get(target, property) {
+          assert.equal(stale, false, "Lifecycle accessed a stale context");
+          return target[String(property)];
+        },
+      });
+
+      try {
+        await harness.handlers.session_start(
+          { reason: "reload" },
+          guardedContext,
+        );
+        stale = true;
+        const currentContext = createMockContext(harness.cwd, harness.prompts, {
+          hasUI: true,
+          statusUpdates,
+        });
+        await harness.handlers[lifecycle](
+          { reason: lifecycle === "session_shutdown" ? "new" : "reload" },
+          currentContext,
+        );
+        assert.equal(statusUpdates.length, 1);
+        if (lifecycle === "session_shutdown") {
+          assert.equal(statusUpdates[0].value, undefined);
+        }
+      } finally {
+        stale = false;
+        await harness.cleanup();
+      }
+    },
+  );
+}
+
 await runAsyncTest("Extension keeps the working runtime through tool-call turns until the agent ends", async () => {
   const workingMessages: Array<string | undefined> = [];
   const harness = createToolCallHarness(
