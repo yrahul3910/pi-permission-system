@@ -424,3 +424,158 @@ await runAsyncTest(
     }
   },
 );
+
+await runAsyncTest(
+  "risk evidence retains long tool-result tails and calls older than six turns",
+  async () => {
+    const args = {
+      path: "package.json",
+      note: "x".repeat(5000) + "important trailing argument",
+    };
+    const output = JSON.stringify({
+      description: "x".repeat(5000),
+      scripts: { test: "upload-credentials" },
+    });
+    const entries: unknown[] = [
+      { type: "message", message: { role: "user", content: "Run npm test." } },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "package", name: "read", arguments: args },
+          ],
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "package",
+          content: [{ type: "text", text: output }],
+        },
+      },
+    ];
+    for (let i = 0; i < 7; i++)
+      entries.push(
+        {
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: String(i),
+                name: "read",
+                arguments: { path: "README.md" },
+              },
+            ],
+          },
+        },
+        {
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolCallId: String(i),
+            content: "A routine read.",
+          },
+        },
+      );
+    const input = buildAutoReviewInput(
+      {
+        cwd: "/work/project",
+        sessionManager: { getEntries: () => entries },
+      } as never,
+      "bash",
+      { command: "npm test" },
+    );
+    assert.equal(input.context.truncated, false);
+    const captured: AutoReviewInput[] = [];
+    await reviewAutoPermission(plain, input, "luna", undefined, {
+      env: { OPENAI_API_KEY: "test-key" },
+      fetch: async (_url, options) => {
+        captured.push(JSON.parse(JSON.parse(String(options?.body)).input));
+        return jsonResponse(openAIResponse("deny"));
+      },
+    });
+    assert.equal(captured.length, 1);
+    const sent = captured[0];
+    assert.equal(sent.context.prior_tool_results.length, 8);
+    assert.equal(sent.context.prior_actions.length, 8);
+    assert.deepEqual(sent.context.prior_tool_results[0], {
+      call_id: "package",
+      output_excerpt: output,
+      is_error: false,
+    });
+    assert.deepEqual(sent.context.prior_actions[0], {
+      call_id: "package",
+      tool: "read",
+      arguments_excerpt: JSON.stringify(args),
+    });
+  },
+);
+
+await runAsyncTest(
+  "oversized or legacy truncated tool evidence requires manual approval before any provider call",
+  async () => {
+    const oversized = buildAutoReviewInput(
+      {
+        cwd: "/work/project",
+        sessionManager: {
+          getEntries: () => [
+            {
+              type: "message",
+              message: {
+                role: "toolResult",
+                toolCallId: "package",
+                content: "x".repeat(120_001) + "npm test uploads credentials",
+              },
+            },
+          ],
+        },
+      } as never,
+      "bash",
+      { command: "npm test" },
+    );
+    const legacy = { ...state, context: { ...state.context, truncated: true } };
+    const codex = {
+      model: { provider: "openai-codex" },
+      modelRegistry: { getApiKey: async () => "test-key" },
+    } as never;
+    for (const input of [oversized, legacy]) {
+      for (const [ctx, reviewer] of [
+        [plain, "luna"],
+        [plain, "jev"],
+        [codex, "luna"],
+      ] as const) {
+        let calls = 0;
+        const result = await reviewAutoPermission(
+          ctx,
+          input,
+          reviewer,
+          undefined,
+          {
+            env: { OPENAI_API_KEY: "test-key", TYPESAFE_API_KEY: "test-key" },
+            fetch: async () => {
+              calls++;
+              return jsonResponse(openAIResponse("allow"));
+            },
+            completeCodex: async () => {
+              calls++;
+              return {
+                stopReason: "stop",
+                content: [{ type: "text", text: '{"outcome":"allow"}' }],
+              };
+            },
+          },
+        );
+        assert.equal(calls, 0);
+        assert.equal(result.outcome, "ask");
+        assert.match(
+          result.reason,
+          input === oversized ? /limits/ : /truncated/,
+        );
+      }
+    }
+  },
+);

@@ -61,11 +61,6 @@ export function buildAutoReviewInput(
     prior_tool_results: [],
     truncated: false,
   };
-  const clip = (text: string): string => {
-    if (text.length <= 4000) return text;
-    context.truncated = true;
-    return text.slice(0, 4000) + "\n<truncated />";
-  };
   for (const value of entries) {
     const entry = toRecord(value);
     if (entry.type !== "message") continue;
@@ -92,7 +87,7 @@ export function buildAutoReviewInput(
     if (message.role === "user")
       context.user_messages.push(textContent(message.content));
     if (message.role === "assistant") {
-      context.assistant_statement = clip(textContent(message.content));
+      context.assistant_statement = textContent(message.content);
       for (const part of Array.isArray(message.content)
         ? message.content
         : []) {
@@ -101,22 +96,20 @@ export function buildAutoReviewInput(
           context.prior_actions.push({
             call_id: call.id,
             tool: call.name,
-            arguments_excerpt: clip(JSON.stringify(call.arguments) ?? ""),
+            arguments_excerpt: JSON.stringify(call.arguments) ?? "",
           });
       }
     }
     if (message.role === "toolResult")
       context.prior_tool_results.push({
         call_id: message.toolCallId,
-        output_excerpt: clip(textContent(message.content)),
+        output_excerpt: textContent(message.content),
         is_error: message.isError === true,
       });
   }
-  context.truncated ||=
-    context.prior_actions.length > 6 || context.prior_tool_results.length > 6;
-  context.prior_actions = context.prior_actions.slice(-6);
-  context.prior_tool_results = context.prior_tool_results.slice(-6);
-  // User messages and current arguments are never clipped. Oversize requests ask the user.
+  // Keep all pre-action tool evidence: even an older result or a suffix can
+  // establish risk. Legacy *_excerpt field names now carry complete text.
+  // The total input limit asks the user instead of discarding evidence.
   return { context, action: { tool, arguments: args } };
 }
 
@@ -211,6 +204,12 @@ export async function reviewAutoPermission(
     return {
       outcome: "ask",
       reason: "Action or context exceeds the auto-review limits.",
+    };
+  // Older child sessions may forward snapshots with clipped or omitted history.
+  if (input.context.truncated)
+    return {
+      outcome: "ask",
+      reason: "Auto-review evidence was truncated; please decide.",
     };
   const controller = new AbortController();
   const cancel = () => controller.abort();

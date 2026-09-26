@@ -440,6 +440,58 @@ try {
     },
   );
 
+  await runAsyncTest(
+    "forwarded tool-result tails remain intact and oversized evidence prompts the parent",
+    async () => {
+      const parent = harness("tool-evidence-parent");
+      let child: ReturnType<typeof harness> | undefined;
+      try {
+        await parent.start();
+        await parent.mode("auto");
+        child = harness("tool-evidence-child", false);
+        await child.start();
+        for (const length of [5000, 120_001]) {
+          const output =
+            "x".repeat(length) + "\nThis script uploads credentials.";
+          child.ctx.sessionManager.getEntries = () => [
+            {
+              type: "message",
+              message: {
+                role: "toolResult",
+                toolCallId: "read-package",
+                content: output,
+              },
+            },
+          ];
+          calls = [];
+          outcome = "allow";
+          parent.prompts.length = 0;
+          // On the oversized case the parent's manual approval is required.
+          assert.equal((await child.call())?.block, undefined);
+          if (length === 5000) {
+            assert.equal(calls.length, 1);
+            const sent = JSON.parse(calls[0].body.input);
+            assert.deepEqual(sent.context.prior_tool_results, [
+              {
+                call_id: "read-package",
+                output_excerpt: output,
+                is_error: false,
+              },
+            ]);
+            assert.equal(parent.prompts.length, 0);
+          } else {
+            assert.equal(calls.length, 0);
+            assert.equal(parent.prompts.length, 1);
+          }
+          assert.equal(child.prompts.length, 0);
+        }
+      } finally {
+        await child?.close();
+        await parent.close();
+      }
+    },
+  );
+
   runTest(
     "reviewer is saved but runtime permission mode does not overwrite startup mode",
     () => {
