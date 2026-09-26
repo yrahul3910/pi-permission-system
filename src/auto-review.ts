@@ -10,6 +10,16 @@ export const JEV_MODEL = "jev-1.13.0";
 export const AUTO_REVIEW_TIMEOUT_MS = 20_000;
 export const MAX_REVIEW_INPUT_CHARS = 120_000;
 
+// Pi excludes these bookkeeping entries from model context. Other entry types
+// may carry evidence that this serializer cannot represent completely.
+const NON_CONTEXT_ENTRY_TYPES = new Set([
+  "custom",
+  "label",
+  "session_info",
+  "thinking_level_change",
+  "model_change",
+]);
+
 export interface AutoReviewInput {
   context: {
     cwd: string;
@@ -63,7 +73,13 @@ export function buildAutoReviewInput(
   };
   for (const value of entries) {
     const entry = toRecord(value);
-    if (entry.type !== "message") continue;
+    if (entry.type !== "message") {
+      // Branch/compaction summaries can be the only surviving constraints.
+      // Never silently discard them or extension-injected context and approve.
+      if (!NON_CONTEXT_ENTRY_TYPES.has(String(entry.type)))
+        context.truncated = true;
+      continue;
+    }
     const message = toRecord(entry.message);
     if (
       message.role === "assistant" &&
@@ -82,6 +98,10 @@ export function buildAutoReviewInput(
       message.toolCallId === toolCallId
     )
       break;
+    if (!["user", "assistant", "toolResult"].includes(String(message.role))) {
+      context.truncated = true;
+      continue;
+    }
     // User constraints can occur anywhere in any message. Keep authorization
     // text intact; the total input limit falls back to manual approval.
     if (message.role === "user")
@@ -209,7 +229,7 @@ export async function reviewAutoPermission(
   if (input.context.truncated)
     return {
       outcome: "ask",
-      reason: "Auto-review evidence was truncated; please decide.",
+      reason: "Auto-review evidence is incomplete or truncated; please decide.",
     };
   const controller = new AbortController();
   const cancel = () => controller.abort();

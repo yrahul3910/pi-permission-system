@@ -1700,6 +1700,7 @@ export async function processForwardedPermissionRequests(
             context: {
               ...request.autoReviewInput.context,
               parent_user_messages: parentContext.user_messages,
+              truncated: request.autoReviewInput.context.truncated || parentContext.truncated,
             },
           });
         } catch {

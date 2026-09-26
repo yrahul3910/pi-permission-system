@@ -579,3 +579,102 @@ await runAsyncTest(
     }
   },
 );
+
+await runAsyncTest(
+  "summaries and unsupported context cannot silently disappear from auto review",
+  async () => {
+    for (const entry of [
+      {
+        type: "branch_summary",
+        summary: "Do not deploy.",
+        fromId: "other-branch",
+      },
+      { type: "compaction", summary: "Do not deploy." },
+      { type: "custom_message", content: "Do not deploy.", display: false },
+      {
+        type: "message",
+        message: { role: "branchSummary", summary: "Do not deploy." },
+      },
+      {
+        type: "message",
+        message: {
+          role: "bashExecution",
+          output: "npm test uploads credentials",
+        },
+      },
+      { type: "future_context_type", content: "Do not deploy." },
+    ]) {
+      const input = buildAutoReviewInput(
+        {
+          cwd: "/work/project",
+          sessionManager: { getBranch: () => [entry], getEntries: () => [] },
+        } as never,
+        "bash",
+        { command: "deploy" },
+      );
+      assert.equal(input.context.truncated, true);
+      let calls = 0;
+      const result = await reviewAutoPermission(
+        plain,
+        input,
+        "luna",
+        undefined,
+        {
+          env: { OPENAI_API_KEY: "test-key" },
+          fetch: async () => {
+            calls++;
+            return jsonResponse(openAIResponse("allow"));
+          },
+        },
+      );
+      assert.equal(calls, 0);
+      assert.equal(result.outcome, "ask");
+      assert.match(result.reason, /incomplete/);
+    }
+  },
+);
+
+runTest(
+  "bookkeeping entries and summaries after the action do not make prior context incomplete",
+  () => {
+    const entries = [
+      ...[
+        "custom",
+        "label",
+        "session_info",
+        "thinking_level_change",
+        "model_change",
+      ].map((type) => ({ type })),
+      {
+        type: "message",
+        message: { role: "user", content: "Read README.md." },
+      },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "current",
+              name: "read",
+              arguments: { path: "README.md" },
+            },
+          ],
+        },
+      },
+      { type: "branch_summary", summary: "Future context." },
+    ];
+    const input = buildAutoReviewInput(
+      {
+        cwd: "/work/project",
+        sessionManager: { getBranch: () => entries },
+      } as never,
+      "read",
+      { path: "README.md" },
+      "current",
+    );
+    assert.equal(input.context.truncated, false);
+    assert.deepEqual(input.context.user_messages, ["Read README.md."]);
+  },
+);

@@ -98,7 +98,7 @@ function harness(name: string, hasUI = true, reviewer = "luna") {
     sessionManager: {
       getSessionId: () => name,
       getSessionDir: () => cwd,
-      getEntries: () => [
+      getEntries: (): unknown[] => [
         {
           type: "message",
           message: {
@@ -484,6 +484,50 @@ try {
             assert.equal(parent.prompts.length, 1);
           }
           assert.equal(child.prompts.length, 0);
+        }
+      } finally {
+        await child?.close();
+        await parent.close();
+      }
+    },
+  );
+
+  await runAsyncTest(
+    "branch summaries and compaction in either parent or child require manual approval",
+    async () => {
+      const parent = harness("summary-parent");
+      let child: ReturnType<typeof harness> | undefined;
+      try {
+        await parent.start();
+        await parent.mode("auto");
+        child = harness("summary-child-worktree", false);
+        await child.start();
+        const parentEntries = parent.ctx.sessionManager.getEntries;
+        const childEntries = child.ctx.sessionManager.getEntries;
+        for (const source of ["parent", "child"]) {
+          for (const type of [
+            "branch_summary",
+            "compaction",
+            "custom_message",
+          ]) {
+            parent.ctx.sessionManager.getEntries = parentEntries;
+            child.ctx.sessionManager.getEntries = childEntries;
+            const target = source === "parent" ? parent : child;
+            target.ctx.sessionManager.getEntries = () => [
+              { type, summary: "Do not deploy.", content: "Do not deploy." },
+            ];
+            calls = [];
+            outcome = "allow";
+            parent.prompts.length = 0;
+            assert.equal((await child.call())?.block, undefined);
+            assert.equal(
+              calls.length,
+              0,
+              `${source} ${type} must prevent auto-review`,
+            );
+            assert.equal(parent.prompts.length, 1);
+            assert.equal(child.prompts.length, 0);
+          }
         }
       } finally {
         await child?.close();
