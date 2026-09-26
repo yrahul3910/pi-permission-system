@@ -109,6 +109,9 @@ export function buildAutoReviewInput(
       continue;
     }
     const message = toRecord(entry.message);
+    // Pi's prompt snapshots and patches are not conversation evidence.
+    if (message.role === "system") continue;
+
     if (
       message.role === "assistant" &&
       Array.isArray(message.content) &&

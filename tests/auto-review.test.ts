@@ -685,6 +685,65 @@ runTest(
 );
 
 await runAsyncTest(
+  "system prompt snapshots and patches do not prevent auto review",
+  async () => {
+    const entries = [
+      {
+        type: "message",
+        message: {
+          role: "system",
+          content: "",
+          sections: { preamble: "Acting agent instructions." },
+          toolsAdded: [{ name: "bash" }],
+        },
+      },
+      {
+        type: "message",
+        message: { role: "user", content: "Print a test message." },
+      },
+      {
+        type: "message",
+        message: {
+          role: "system",
+          content: "Updated acting agent instructions.",
+          sections: { skills: null },
+          toolsRemoved: ["write"],
+        },
+      },
+    ];
+    // SAFETY: The builder only reads cwd and sessionManager.getBranch here.
+    const ctx = {
+      cwd: "/work/project",
+      sessionManager: { getBranch: () => entries },
+    } as never;
+    const input = buildAutoReviewInput(ctx, "bash", {
+      command: "python3 -c 'print(\"test\")'",
+    });
+
+    assert.equal(input.context.truncated, false);
+    assert.deepEqual(input.context.user_messages, ["Print a test message."]);
+    assert.equal(input.context.assistant_statement, "");
+    assert.deepEqual(input.context.prior_actions, []);
+    assert.deepEqual(input.context.prior_tool_results, []);
+    let calls = 0;
+
+    const result = await reviewAutoPermission(plain, input, "jev", undefined, {
+      env: { TYPESAFE_API_KEY: "test-key" },
+      fetch: async (_url, options) => {
+        calls++;
+        assert.ok(!String(options?.body).includes("Acting agent instructions"));
+        assert.ok(!String(options?.body).includes("Updated acting agent"));
+
+        return jsonResponse({ answers: { permission: { choice: "allow" } } });
+      },
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(result.outcome, "allow");
+  },
+);
+
+await runAsyncTest(
   "images, unsupported parts and malformed content require manual review",
   async () => {
     for (const role of ["user", "toolResult", "assistant"]) {
