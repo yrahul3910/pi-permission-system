@@ -8,13 +8,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import extension from "../src/index.js";
+import extension, { AUTO_APPROVAL_ENTRY_TYPE } from "../src/index.js";
 import {
   DEFAULT_EXTENSION_CONFIG,
   loadPermissionSystemConfig,
   savePermissionSystemConfig,
 } from "../src/extension-config.js";
 import { SUBAGENT_ENV_HINT_KEYS } from "../src/permission-forwarding.js";
+import { MAX_REVIEW_INPUT_CHARS } from "../src/auto-review.js";
 import { runAsyncTest, runTest } from "./test-harness.js";
 
 const root = mkdtempSync(join(tmpdir(), "auto-mode-integration-"));
@@ -84,6 +85,7 @@ function harness(name: string, hasUI = true, reviewer = "luna") {
   const handlers: Record<string, Handler> = {};
   const commands: Record<string, { handler: Handler }> = {};
   const prompts: string[] = [];
+  const entries: Array<{ customType: string; data: unknown }> = [];
   let selection = "Allow Once";
   const ctx = {
     cwd,
@@ -120,7 +122,8 @@ function harness(name: string, hasUI = true, reviewer = "luna") {
       input: async () => undefined,
     },
   };
-  extension({
+
+  const api = {
     on: (event: string, handler: Handler) => {
       handlers[event] = handler;
     },
@@ -128,16 +131,23 @@ function harness(name: string, hasUI = true, reviewer = "luna") {
       commands[name] = command;
     },
     registerProvider() {},
+    registerEntryRenderer() {},
+    appendEntry: (customType: string, data: unknown) => {
+      entries.push({ customType, data });
+    },
     getAllTools: () => [{ name: "read" }, { name: "write" }],
     setActiveTools() {},
     events: { emit() {} },
-  } as never);
+  };
+
+  extension(api);
   let id = 0;
   return {
     ctx,
     handlers,
     commands,
     prompts,
+    entries,
     configPath,
     select: (value: string) => {
       selection = value;
@@ -175,6 +185,13 @@ try {
           "an approval must not be cached for the next identical action",
         );
         assert.equal(h.prompts.length, 0);
+
+        const approval = {
+          customType: AUTO_APPROVAL_ENTRY_TYPE,
+          data: { message: "Auto-review approved: read (luna)" },
+        };
+        assert.deepEqual(h.entries, [approval, approval]);
+
         assert.equal((await h.call("write"))?.block, true);
         assert.equal((await h.call("read", ".env"))?.block, true);
         assert.equal(
@@ -191,6 +208,8 @@ try {
         h.select("Reject");
         assert.equal((await h.call())?.block, true);
         assert.equal(h.prompts.length, 2);
+
+        assert.equal(h.entries.length, 2, "No manual approval labels");
         assert.equal(
           JSON.parse(readFileSync(h.configPath, "utf8")).permissionMode,
           "ask",
@@ -217,6 +236,14 @@ try {
           outcome = "allow";
           assert.equal((await child.call())?.block, undefined);
           assert.equal(calls.length, 1);
+
+          assert.deepEqual(parent.entries, [
+            {
+              customType: AUTO_APPROVAL_ENTRY_TYPE,
+              data: { message: `Auto-review approved: read (${reviewer})` },
+            },
+          ]);
+          assert.deepEqual(child.entries, []);
           assert.match(
             calls[0].url,
             reviewer === "jev" ? /typesafe/ : /api.openai.com/,
@@ -441,7 +468,7 @@ try {
   );
 
   await runAsyncTest(
-    "forwarded tool-result tails remain intact and oversized evidence prompts the parent",
+    "forwarded tool-result tails remain intact while oversized history is explicitly bounded",
     async () => {
       const parent = harness("tool-evidence-parent");
       let child: ReturnType<typeof harness> | undefined;
@@ -458,7 +485,7 @@ try {
             child.ctx.sessionManager.getEntries = childEntries;
             const output =
               "x".repeat(length) + "\nThis script uploads credentials.";
-            const target: ReturnType<typeof harness> = source === "parent" ? parent : child;
+            const target: typeof parent = source === "parent" ? parent : child;
             target.ctx.sessionManager.getEntries = () => [
               {
                 type: "message",
@@ -516,9 +543,16 @@ try {
               ]);
               assert.equal(parent.prompts.length, 0);
             } else {
-              assert.equal(calls.length, 0);
-              assert.equal(parent.prompts.length, 1);
+              assert.equal(calls.length, 1);
+              const sent = JSON.parse(calls[0].body.input);
+              const ctx = sent.context;
+              const evidence = source === "parent" ? ctx.parent_evidence : ctx;
+              assert.deepEqual(evidence.prior_tool_results, []);
+              assert.equal(evidence.omitted_tool_history.prior_tool_results, 1);
+              assert.ok(JSON.stringify(sent).length <= MAX_REVIEW_INPUT_CHARS);
+              assert.equal(parent.prompts.length, 0);
             }
+
             assert.equal(child.prompts.length, 0);
           }
         }

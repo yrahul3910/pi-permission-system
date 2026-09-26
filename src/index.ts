@@ -227,6 +227,7 @@ type ThoughtDurationTheme = {
 const PERMISSION_REQUEST_EVENT_CHANNEL =
   "pi-permission-system:permission-request";
 export const THOUGHT_DURATION_ENTRY_TYPE = `${EXTENSION_ID}:thought-duration`;
+export const AUTO_APPROVAL_ENTRY_TYPE = `${EXTENSION_ID}:auto-approval`;
 const PATH_BEARING_TOOLS = new Set([
   "read",
   "write",
@@ -1929,14 +1930,23 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     ownerSignal?: AbortSignal,
   ): Promise<AutoReviewResult> => {
     const controller = new AbortController();
+    const signal = controller.signal;
     const cancelOnHandoff = () => controller.abort();
     ownerSignal?.addEventListener("abort", cancelOnHandoff, { once: true });
     if (ownerSignal?.aborted) controller.abort();
     activeReviews.add(controller);
+    const reviewer = sessionConfig.autoReviewer ?? "luna";
+
     try {
-      return await reviewAutoPermission(
-        ctx, input, sessionConfig.autoReviewer ?? "luna", controller.signal,
-      );
+      const result = await reviewAutoPermission(ctx, input, reviewer, signal);
+
+      if (result.outcome === "allow" && ctx.hasUI && !signal.aborted) {
+        appendAnnotation(AUTO_APPROVAL_ENTRY_TYPE, {
+          message: `Auto-review approved: ${input.action.tool} (${reviewer})`,
+        });
+      }
+
+      return result;
     } finally {
       ownerSignal?.removeEventListener("abort", cancelOnHandoff);
       activeReviews.delete(controller);
@@ -2184,7 +2194,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // Entry renderers and their live `entry_appended` events arrived after some
   // supported Pi versions. Feature-detect them so older runtimes keep their
   // permission behavior without failing to load this extension.
-  let canRenderThoughtDuration = false;
+  let canRenderAnnotations = false;
   try {
     const registerEntryRenderer = toRecord(pi).registerEntryRenderer;
     if (typeof registerEntryRenderer === "function") {
@@ -2204,14 +2214,33 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           );
         },
       );
-      canRenderThoughtDuration = true;
+
+      registerEntryRenderer.call(
+        pi,
+        AUTO_APPROVAL_ENTRY_TYPE,
+        (
+          entry: { data?: unknown },
+          _options: unknown,
+          theme: ThoughtDurationTheme,
+        ) => {
+          const message = getNonEmptyString(toRecord(entry.data).message);
+          const text = message ?? "Auto-review approved";
+
+          return new Text(theme.fg("success", text), 1, 0);
+        },
+      );
+
+      canRenderAnnotations = true;
     }
   } catch {
     // Rendering this optional annotation must never disable permission checks.
   }
 
-  const appendThoughtDuration = (elapsedMs: number): void => {
-    if (!canRenderThoughtDuration) {
+  const appendAnnotation = (
+    customType: string,
+    data: ThoughtDurationEntryData | { message: string },
+  ): void => {
+    if (!canRenderAnnotations) {
       return;
     }
 
@@ -2220,10 +2249,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       return;
     }
 
-    const data: ThoughtDurationEntryData = {
-      elapsedMs: getThoughtDurationElapsedMs({ elapsedMs }),
-    };
-    appendEntry.call(pi, THOUGHT_DURATION_ENTRY_TYPE, data);
+    try {
+      appendEntry.call(pi, customType, data);
+    } catch (error) {
+      writeDebugEntry("annotation.append_failed", {
+        customType,
+        error: formatUnknownErrorMessage(error),
+      });
+    }
   };
 
   let modelOptionCompatibilityRegistration: Promise<void> | null = null;
@@ -2855,7 +2888,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
 
     // Pi renders appended custom entries before the still-streaming final
     // assistant message, so this appears as the requested gray preface.
-    appendThoughtDuration(turnRuntime.elapsedMs);
+    appendAnnotation(THOUGHT_DURATION_ENTRY_TYPE, {
+      elapsedMs: getThoughtDurationElapsedMs({
+        elapsedMs: turnRuntime.elapsedMs,
+      }),
+    });
   });
 
   pi.on(

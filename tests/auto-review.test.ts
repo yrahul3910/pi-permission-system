@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import {
+  boundAutoReviewInput,
   buildAutoReviewInput,
+  isAutoReviewInput,
+  MAX_REVIEW_INPUT_CHARS,
   reviewAutoPermission,
   LUNA_MODEL,
   type AutoReviewInput,
@@ -297,6 +300,37 @@ runTest(
   },
 );
 
+runTest(
+  "review budgets preserve instructions, action, and recent evidence",
+  () => {
+    const input: AutoReviewInput = {
+      ...state,
+      context: {
+        ...state.context,
+        parent_user_messages: ["Do not publish."],
+        prior_tool_results: [
+          "x".repeat(MAX_REVIEW_INPUT_CHARS),
+          "Recent evidence",
+        ],
+      },
+    };
+    const bounded = boundAutoReviewInput(input);
+    assert.ok(JSON.stringify(bounded).length <= MAX_REVIEW_INPUT_CHARS);
+    assert.deepEqual(bounded.action, input.action);
+    const { context } = bounded;
+    assert.deepEqual(context.user_messages, input.context.user_messages);
+    assert.deepEqual(context.parent_user_messages, ["Do not publish."]);
+
+    assert.deepEqual(context.prior_tool_results, ["Recent evidence"]);
+    assert.deepEqual(context.omitted_tool_history, {
+      prior_actions: 0,
+      prior_tool_results: 1,
+    });
+    assert.equal(input.context.prior_tool_results.length, 2);
+    assert.deepEqual(boundAutoReviewInput(bounded), bounded);
+  },
+);
+
 await runAsyncTest(
   "oversize actions go to the user without clipping or a network call",
   async () => {
@@ -521,27 +555,20 @@ await runAsyncTest(
 );
 
 await runAsyncTest(
-  "oversized or legacy truncated tool evidence requires manual approval before any provider call",
+  "oversized history is bounded but legacy truncated evidence still requires manual approval",
   async () => {
-    const oversized = buildAutoReviewInput(
-      {
-        cwd: "/work/project",
-        sessionManager: {
-          getEntries: () => [
-            {
-              type: "message",
-              message: {
-                role: "toolResult",
-                toolCallId: "package",
-                content: "x".repeat(120_001) + "npm test uploads credentials",
-              },
-            },
-          ],
-        },
-      } as never,
-      "bash",
-      { command: "npm test" },
-    );
+    const oversized: AutoReviewInput = {
+      ...state,
+      context: {
+        ...state.context,
+        prior_tool_results: [
+          {
+            call_id: "package",
+            output_excerpt: "x".repeat(120_001),
+          },
+        ],
+      },
+    };
     const legacy = { ...state, context: { ...state.context, truncated: true } };
     const codex = {
       model: { provider: "openai-codex" },
@@ -561,12 +588,27 @@ await runAsyncTest(
           undefined,
           {
             env: { OPENAI_API_KEY: "test-key", TYPESAFE_API_KEY: "test-key" },
-            fetch: async () => {
+            fetch: async (url, options) => {
               calls++;
-              return jsonResponse(openAIResponse("allow"));
+              const body = JSON.parse(String(options?.body));
+              const sent = JSON.parse(body.input ?? body.state);
+              assert.ok(isAutoReviewInput(sent));
+              assert.deepEqual(sent.context.omitted_tool_history, {
+                prior_actions: 0,
+                prior_tool_results: 1,
+              });
+              assert.ok(JSON.stringify(sent).length <= MAX_REVIEW_INPUT_CHARS);
+
+              return jsonResponse(
+                String(url).includes("typesafe")
+                  ? { answers: { permission: { choice: "allow" } } }
+                  : openAIResponse("allow"),
+              );
             },
-            completeCodex: async () => {
+            completeCodex: async (_model, context) => {
               calls++;
+              assert.match(JSON.stringify(context), /omitted_tool_history/);
+
               return {
                 stopReason: "stop",
                 content: [{ type: "text", text: '{"outcome":"allow"}' }],
@@ -574,12 +616,10 @@ await runAsyncTest(
             },
           },
         );
-        assert.equal(calls, 0);
-        assert.equal(result.outcome, "ask");
-        assert.match(
-          result.reason,
-          input === oversized ? /limits/ : /truncated/,
-        );
+
+        assert.equal(calls, input === oversized ? 1 : 0);
+        assert.equal(result.outcome, input === oversized ? "allow" : "ask");
+        if (input === legacy) assert.match(result.reason, /truncated/);
       }
     }
   },

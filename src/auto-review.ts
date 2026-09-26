@@ -8,7 +8,8 @@ export type AutoReviewer = "luna" | "jev";
 export const LUNA_MODEL = "gpt-6-luna";
 export const JEV_MODEL = "jev-1.13.0";
 export const AUTO_REVIEW_TIMEOUT_MS = 20_000;
-export const MAX_REVIEW_INPUT_CHARS = 120_000;
+// Leave room for the review question and JSON token overhead in Jev's 32k window.
+export const MAX_REVIEW_INPUT_CHARS = 80_000;
 
 // Pi excludes these bookkeeping entries from model context. Other entry types
 // may carry evidence that this serializer cannot represent completely.
@@ -22,6 +23,11 @@ const NON_CONTEXT_ENTRY_TYPES = new Set([
   "model_change",
 ]);
 
+type OmittedToolHistory = {
+  prior_actions: number;
+  prior_tool_results: number;
+};
+
 export interface AutoReviewInput {
   context: {
     cwd: string;
@@ -29,6 +35,7 @@ export interface AutoReviewInput {
     assistant_statement: string;
     prior_actions: unknown[];
     prior_tool_results: unknown[];
+    omitted_tool_history?: OmittedToolHistory;
     truncated: boolean;
     parent_user_messages?: string[];
     parent_evidence?: {
@@ -36,6 +43,7 @@ export interface AutoReviewInput {
       assistant_statement: string;
       prior_actions: unknown[];
       prior_tool_results: unknown[];
+      omitted_tool_history?: OmittedToolHistory;
     };
   };
   action: { tool: string; arguments: unknown };
@@ -161,10 +169,18 @@ export function buildAutoReviewInput(
         is_error: message.isError === true,
       });
   }
-  // Keep all pre-action tool evidence: even an older result or a suffix can
-  // establish risk. Legacy *_excerpt field names now carry complete text.
-  // The total input limit asks the user instead of discarding evidence.
+
+  // Capture complete records here; the final review budget retains whole tails.
   return { context, action: { tool, arguments: args } };
+}
+
+function isOmittedToolHistory(value: unknown): value is OmittedToolHistory {
+  const record = toRecord(value);
+
+  return [record.prior_actions, record.prior_tool_results].every(
+    (count): count is number =>
+      typeof count === "number" && Number.isSafeInteger(count) && count >= 0,
+  );
 }
 
 export function isAutoReviewInput(value: unknown): value is AutoReviewInput {
@@ -181,6 +197,8 @@ export function isAutoReviewInput(value: unknown): value is AutoReviewInput {
       typeof context.assistant_statement === "string" &&
       Array.isArray(context.prior_actions) &&
       Array.isArray(context.prior_tool_results) &&
+      (context.omitted_tool_history === undefined ||
+        isOmittedToolHistory(context.omitted_tool_history)) &&
       typeof context.truncated === "boolean" &&
       (context.parent_user_messages === undefined ||
         (Array.isArray(context.parent_user_messages) &&
@@ -192,15 +210,65 @@ export function isAutoReviewInput(value: unknown): value is AutoReviewInput {
           parentEvidence.cwd.length > 0 &&
           typeof parentEvidence.assistant_statement === "string" &&
           Array.isArray(parentEvidence.prior_actions) &&
-          Array.isArray(parentEvidence.prior_tool_results))) &&
+          Array.isArray(parentEvidence.prior_tool_results) &&
+          (parentEvidence.omitted_tool_history === undefined ||
+            isOmittedToolHistory(parentEvidence.omitted_tool_history)))) &&
       typeof action.tool === "string" &&
       action.tool.length > 0 &&
       Object.hasOwn(action, "arguments") &&
-      JSON.stringify(value).length <= MAX_REVIEW_INPUT_CHARS
+      JSON.stringify(value) !== undefined
     );
   } catch {
     return false;
   }
+}
+
+/**
+ * Keep recent whole tool records within the review budget.
+ *
+ * Instructions and the action stay intact; counts record omitted history.
+ *
+ * Returns a new input when trimming. Oversized fixed fields still need approval.
+ */
+export function boundAutoReviewInput(input: AutoReviewInput): AutoReviewInput {
+  if (JSON.stringify(input).length <= MAX_REVIEW_INPUT_CHARS) return input;
+
+  const context = { ...input.context };
+  const bounded = { ...input, context };
+  type ToolHistory = Pick<
+    AutoReviewInput["context"],
+    "prior_actions" | "prior_tool_results" | "omitted_tool_history"
+  >;
+  const sources: ToolHistory[] = [context];
+
+  if (context.parent_evidence) {
+    context.parent_evidence = { ...context.parent_evidence };
+    sources.push(context.parent_evidence);
+  }
+
+  const histories = sources.flatMap((source) =>
+    (["prior_actions", "prior_tool_results"] as const).map((key) => ({ source, key })),
+  );
+
+  while (JSON.stringify(bounded).length > MAX_REVIEW_INPUT_CHARS) {
+    const [largest] = histories
+      .map(({ source, key }) => ({ source, key, size: JSON.stringify(source[key]).length }))
+      .sort((left, right) => right.size - left.size);
+    const records = largest.source[largest.key];
+    if (!records.length) break;
+
+    const count = Math.ceil(records.length / 2);
+    const omitted = {
+      prior_actions: 0,
+      prior_tool_results: 0,
+      ...largest.source.omitted_tool_history,
+    };
+    omitted[largest.key] += count;
+    largest.source.omitted_tool_history = omitted;
+    largest.source[largest.key] = records.slice(count);
+  }
+
+  return bounded;
 }
 
 export function isCodexModel(model: unknown): boolean {
@@ -254,18 +322,25 @@ export interface AutoReviewDependencies {
 
 export async function reviewAutoPermission(
   ctx: Pick<ExtensionContext, "model" | "modelRegistry">,
-  input: AutoReviewInput,
+  sourceInput: unknown,
   reviewer: AutoReviewer,
   signal?: AbortSignal,
   dependencies: AutoReviewDependencies = {},
 ): Promise<AutoReviewResult> {
   if (signal?.aborted)
     return { outcome: "cancelled", reason: "Permission review was cancelled." };
-  if (!isAutoReviewInput(input))
+  if (!isAutoReviewInput(sourceInput))
+    return { outcome: "ask", reason: "Auto-review input is invalid." };
+
+  const input = boundAutoReviewInput(sourceInput);
+
+  if (JSON.stringify(input).length > MAX_REVIEW_INPUT_CHARS) {
     return {
       outcome: "ask",
-      reason: "Action or context exceeds the auto-review limits.",
+      reason: "Action or user instructions exceed the auto-review limits.",
     };
+  }
+
   // Older child sessions may forward snapshots with clipped or omitted history.
   if (input.context.truncated)
     return {
