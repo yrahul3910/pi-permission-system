@@ -19,5 +19,5 @@ export function shouldAutoApprovePermissionState(
 }
 
 export function canResolveAskPermissionRequest(options: AskPermissionResolutionOptions): boolean {
-  return options.hasUI || options.isSubagent || isYoloModeEnabled(options.config);
+  return options.hasUI || options.isSubagent || isYoloModeEnabled(options.config) || options.config.permissionMode === "auto";
 }

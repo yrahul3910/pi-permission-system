@@ -268,6 +268,7 @@ declare module "@earendil-works/pi-ai" {
     [key: string]: any;
   }
   export function getApiProvider(api: Api): { streamSimple: (...args: unknown[]) => AssistantMessageEventStream } | undefined;
+  export function completeSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<unknown>;
 }
 
 declare module "@earendil-works/pi-tui" {

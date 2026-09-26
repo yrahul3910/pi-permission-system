@@ -59,6 +59,13 @@ import {
 } from "./before-agent-start-cache.js";
 import { collectSessionFamilies } from "./bash-evaluator.js";
 import {
+  buildAutoReviewInput,
+  isAutoReviewInput,
+  reviewAutoPermission,
+  type AutoReviewInput,
+  type AutoReviewResult,
+} from "./auto-review.js";
+import {
   isPermissionDecisionState,
   isSessionPersistentDecisionState,
   requestPermissionDecisionFromUi,
@@ -1344,6 +1351,9 @@ async function readForwardedPermissionRequest(
       targetSessionId: parsed.targetSessionId,
       requesterAgentName: parsed.requesterAgentName,
       message: parsed.message,
+      autoReviewInput: isAutoReviewInput(parsed.autoReviewInput)
+        ? parsed.autoReviewInput
+        : undefined,
     };
   } catch (error) {
     logPermissionForwardingWarning(
@@ -1416,6 +1426,7 @@ async function waitForForwardedPermissionApproval(
   ctx: ExtensionContext,
   message: string,
   config: PermissionSystemExtensionConfig,
+  autoReviewInput?: AutoReviewInput,
 ): Promise<PermissionPromptDecision> {
   const requesterSessionId = getSessionId(ctx);
   const targetSessionId = resolvePermissionForwardingTargetSessionId({
@@ -1460,6 +1471,7 @@ async function waitForForwardedPermissionApproval(
     targetSessionId,
     requesterAgentName,
     message,
+    autoReviewInput: isAutoReviewInput(autoReviewInput) ? autoReviewInput : undefined,
   };
 
   const requestPath = join(location.requestsDir, `${requestId}.json`);
@@ -1559,6 +1571,7 @@ type ProcessForwardedPermissionRequestsOptions = {
   turnRuntime?: TurnRuntimeTracker;
   getConfig?: () => PermissionSystemExtensionConfig;
   signal?: AbortSignal;
+  reviewAction?: (input: AutoReviewInput) => Promise<AutoReviewResult>;
 };
 
 /** Resolve forwarded requests with the receiving session's current settings. */
@@ -1655,6 +1668,7 @@ export async function processForwardedPermissionRequests(
       approved: false,
       state: "denied",
     };
+    let reviewerCancelled = false;
     if (requestAgeMs >= requestTimeoutMs) {
       writeReviewEntry("forwarded_permission.expired", {
         ...forwardedPermissionLogDetails,
@@ -1673,65 +1687,102 @@ export async function processForwardedPermissionRequests(
       );
       decision = { approved: true, state: "approved" };
     } else {
-      writeReviewEntry(
-        "forwarded_permission.prompted",
-        forwardedPermissionLogDetails,
-      );
-      if (config.debug) {
+      if (
+        config.permissionMode === "auto" &&
+        request.autoReviewInput &&
+        options.reviewAction
+      ) {
+        let result: AutoReviewResult;
         try {
-          ctx.ui.notify(
-            `Subagent '${request.requesterAgentName || "unknown"}' is waiting for permission approval.`,
-            "warning",
-          );
+          const parentContext = buildAutoReviewInput(ctx, "permission-context", {}).context;
+          result = await options.reviewAction({
+            ...request.autoReviewInput,
+            context: {
+              ...request.autoReviewInput.context,
+              parent_user_messages: parentContext.user_messages,
+            },
+          });
+        } catch {
+          result = {
+            outcome: "ask",
+            reason: "Auto-review context is unavailable; please decide.",
+          };
+        }
+        // Leave the request for the replacement owner after a handoff.
+        if (options.signal?.aborted) return;
+        writeReviewEntry("forwarded_permission.auto_review", {
+          ...forwardedPermissionLogDetails,
+          outcome: result.outcome,
+          provider: result.provider,
+        });
+        if (result.outcome === "allow") decision = { approved: true, state: "approved" };
+        if (result.outcome === "cancelled") {
+          reviewerCancelled = true;
+          decision = { approved: false, state: "denied", denialReason: result.reason };
+        }
+        if (result.outcome === "ask") request.message += `\n\n${result.reason}`;
+      }
+      if (!decision.approved && !reviewerCancelled) {
+        writeReviewEntry(
+          "forwarded_permission.prompted",
+          forwardedPermissionLogDetails,
+        );
+        if (config.debug) {
+          try {
+            ctx.ui.notify(
+              `Subagent '${request.requesterAgentName || "unknown"}' is waiting for permission approval.`,
+              "warning",
+            );
+          } catch (error) {
+            logPermissionForwardingWarning(
+              "Failed to show forwarded permission notification",
+              error,
+            );
+          }
+        }
+        notifyPermissionWaitingIfUnfocused(
+          `Subagent '${request.requesterAgentName || "unknown"}' is waiting for permission approval.`,
+        );
+        try {
+          const forwardedPromptTimeoutSeconds =
+            request.expiresAt === null ? null : requestTimeoutMs / 1000;
+          const timeoutMs =
+            forwardedPromptTimeoutSeconds !== null &&
+            forwardedPromptTimeoutSeconds > 0
+              ? Math.max(1, expiresAt - Date.now())
+              : undefined;
+          const timeoutDenialReason =
+            timeoutMs !== undefined
+              ? `permission_timeout: forwarded permission request was not answered within ${forwardedPromptTimeoutSeconds} seconds of creation.`
+              : undefined;
+          const promptMessage =
+            timeoutMs !== undefined
+              ? `This forwarded request has ${Math.ceil(timeoutMs / 1000)} seconds remaining before it is denied.`
+              : "This forwarded prompt will wait indefinitely until answered.";
+
+          const requestDecision = () =>
+            requestPermissionDecisionFromUi(
+              ctx.ui,
+              "Permission Required (Subagent)",
+              [formatForwardedPermissionPrompt(request), "", promptMessage].join(
+                "\n",
+              ),
+              {
+                timeoutMs,
+                expiresAt: request.expiresAt ?? undefined,
+                timeoutDenialReason,
+                signal: options.signal,
+              },
+            );
+          decision = await (options.turnRuntime?.pauseWhile(requestDecision) ??
+            requestDecision());
         } catch (error) {
-          logPermissionForwardingWarning(
-            "Failed to show forwarded permission notification",
+          logPermissionForwardingError(
+            "Failed to show forwarded permission confirmation dialog",
             error,
           );
+          decision = { approved: false, state: "denied" };
         }
-      }
-      notifyPermissionWaitingIfUnfocused(
-        `Subagent '${request.requesterAgentName || "unknown"}' is waiting for permission approval.`,
-      );
-      try {
-        const forwardedPromptTimeoutSeconds =
-          request.expiresAt === null ? null : requestTimeoutMs / 1000;
-        const timeoutMs =
-          forwardedPromptTimeoutSeconds !== null &&
-          forwardedPromptTimeoutSeconds > 0
-            ? Math.max(1, requestTimeoutMs - requestAgeMs)
-            : undefined;
-        const timeoutDenialReason =
-          timeoutMs !== undefined
-            ? `permission_timeout: forwarded permission request was not answered within ${forwardedPromptTimeoutSeconds} seconds of creation.`
-            : undefined;
-        const promptMessage =
-          timeoutMs !== undefined
-            ? `This forwarded request has ${Math.ceil(timeoutMs / 1000)} seconds remaining before it is denied.`
-            : "This forwarded prompt will wait indefinitely until answered.";
-
-        const requestDecision = () =>
-          requestPermissionDecisionFromUi(
-            ctx.ui,
-            "Permission Required (Subagent)",
-            [formatForwardedPermissionPrompt(request), "", promptMessage].join(
-              "\n",
-            ),
-            {
-              timeoutMs,
-              expiresAt: request.expiresAt ?? undefined,
-              timeoutDenialReason,
-              signal: options.signal,
-            },
-          );
-        decision = await (options.turnRuntime?.pauseWhile(requestDecision) ??
-          requestDecision());
-      } catch (error) {
-        logPermissionForwardingError(
-          "Failed to show forwarded permission confirmation dialog",
-          error,
-        );
-        decision = { approved: false, state: "denied" };
       }
     }
 
@@ -1806,6 +1857,7 @@ async function confirmPermission(
   message: string,
   config: PermissionSystemExtensionConfig,
   sessionFamilies?: readonly string[],
+  autoReviewInput?: AutoReviewInput,
 ): Promise<PermissionPromptDecision> {
   if (ctx.hasUI) {
     return requestPermissionDecisionFromUi(ctx.ui, "Permission Required", message, {
@@ -1817,7 +1869,7 @@ async function confirmPermission(
     return { approved: false, state: "denied" };
   }
 
-  return waitForForwardedPermissionApproval(ctx, message, config);
+  return waitForForwardedPermissionApproval(ctx, message, config, autoReviewInput);
 }
 
 function derivePiProjectPaths(cwd: string | undefined | null): {
@@ -1859,9 +1911,41 @@ type CachedPromptStateResult = {
 /** Register permission enforcement with independent session approval state and parent forwarding. */
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   let sessionConfig = cloneDefaultConfig();
+  const activeReviews = new Set<AbortController>();
+  const cancelAutoReviews = (): void => {
+    for (const controller of activeReviews) controller.abort();
+    activeReviews.clear();
+  };
+  const reviewAction = async (
+    ctx: ExtensionContext,
+    input: AutoReviewInput,
+    ownerSignal?: AbortSignal,
+  ): Promise<AutoReviewResult> => {
+    const controller = new AbortController();
+    const cancelOnHandoff = () => controller.abort();
+    ownerSignal?.addEventListener("abort", cancelOnHandoff, { once: true });
+    if (ownerSignal?.aborted) controller.abort();
+    activeReviews.add(controller);
+    try {
+      return await reviewAutoPermission(
+        ctx, input, sessionConfig.autoReviewer ?? "luna", controller.signal,
+      );
+    } finally {
+      ownerSignal?.removeEventListener("abort", cancelOnHandoff);
+      activeReviews.delete(controller);
+    }
+  };
   let runtimeApi: PiPermissionSystemRuntimeApi | null = null;
   /** Update this binding's settings and the diagnostic fallback without sharing approval state. */
   const updateSessionConfig = (config: PermissionSystemExtensionConfig): void => {
+    if (
+      config.permissionMode !== sessionConfig.permissionMode ||
+      config.autoReviewer !== sessionConfig.autoReviewer ||
+      config.yoloMode !== sessionConfig.yoloMode
+    ) {
+      cancelAutoReviews();
+      recentPermissionPromptDecisions.clear();
+    }
     sessionConfig = normalizePermissionSystemConfig(config);
     setExtensionConfig(sessionConfig);
   };
@@ -1932,6 +2016,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     const config: PermissionSystemExtensionConfig = {
       ...result.config,
       yoloMode: sessionConfig.yoloMode,
+      permissionMode: sessionConfig.permissionMode,
     };
     updateSessionConfig(config);
     return { ...result, config };
@@ -2035,6 +2120,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     const normalized = normalizePermissionSystemConfig({
       ...sessionConfig,
       yoloMode: enabled,
+      permissionMode: enabled ? "yolo" : "ask",
     });
     const changed = sessionConfig.yoloMode !== normalized.yoloMode;
 
@@ -2068,6 +2154,16 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   applyExtensionConfigSideEffects(initialConfigResult);
 
   runtimeApi = {
+    getPermissionMode: () => sessionConfig.permissionMode ?? "ask",
+    setPermissionMode: (mode) => {
+      if (!["ask", "auto", "yolo"].includes(mode)) return;
+      updateSessionConfig({
+        ...sessionConfig,
+        permissionMode: mode,
+        yoloMode: mode === "yolo",
+      });
+      syncPermissionSystemStatusWhenPossible(sessionConfig);
+    },
     getYoloMode: () => sessionConfig.yoloMode,
     setYoloMode: setYoloModeFromRuntimeApi,
     toggleYoloMode: (options?: YoloModeControlOptions) =>
@@ -2158,6 +2254,28 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("permissions", {
+    description: "Set this session's permission mode: ask, auto, or yolo",
+    getArgumentCompletions: (prefix) => ["ask", "auto", "yolo"]
+      .filter((mode) => mode.startsWith(prefix))
+      .map((value) => ({ value, label: value })),
+    handler: async (args, ctx) => {
+      runtimeContext = ctx;
+      const mode = args.trim();
+      if (mode !== "ask" && mode !== "auto" && mode !== "yolo") {
+        if (ctx.hasUI) ctx.ui.notify("Usage: /permissions ask|auto|yolo", "info");
+        return;
+      }
+      runtimeApi?.setPermissionMode?.(mode);
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          `Permission mode: ${mode}${mode === "auto" ? ` (${sessionConfig.autoReviewer ?? "luna"})` : ""}.`,
+          "info",
+        );
+      }
+    },
+  });
+
   pi.registerCommand("permission-system", {
     description: PERMISSION_SYSTEM_COMMAND_DESCRIPTION,
     handler: createPermissionSystemCommandHandler(async (ctx) => {
@@ -2239,7 +2357,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     details: PermissionPromptDetails,
   ): Promise<PermissionPromptDecision> => {
     prunePermissionPromptDecisionCache(recentPermissionPromptDecisions);
-    const cacheKey = createPermissionPromptCacheKey(details);
+    // Review current evidence each time; never reuse an automatic approval after state changes.
+    const isChild = !ctx.hasUI && isSubagentExecutionContext(ctx);
+    const cacheKey = sessionConfig.permissionMode === "auto" || isChild
+      ? null
+      : createPermissionPromptCacheKey(details);
     const cachedDecision = cacheKey
       ? getCachedPermissionPromptDecision(
           recentPermissionPromptDecisions,
@@ -2263,7 +2385,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     const decisionPromise = (async (): Promise<PermissionPromptDecision> => {
-      if (shouldAutoApprovePermissionState("ask", sessionConfig)) {
+      if (!isChild && shouldAutoApprovePermissionState("ask", sessionConfig)) {
         reviewPermissionDecision("permission_request.auto_approved", {
           ...details,
           resolution: "auto_response",
@@ -2273,6 +2395,43 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         emitPermissionStateEvent(details, "approved");
         await extensionLogger.flush();
         return { approved: true, state: "approved" };
+      }
+
+      let reviewInput: AutoReviewInput | undefined;
+      if (isChild || sessionConfig.permissionMode === "auto") {
+        try {
+          reviewInput = buildAutoReviewInput(
+            ctx,
+            details.toolName ?? "skill",
+            details.toolInput ?? { name: details.skillName },
+            details.toolCallId,
+          );
+        } catch {
+          // Unavailable context requires human approval.
+        }
+      }
+      let promptMessage = details.message;
+      if (!isChild && sessionConfig.permissionMode === "auto") {
+        const result: AutoReviewResult = reviewInput
+          ? await reviewAction(ctx, reviewInput)
+          : { outcome: "ask", reason: "Auto-review context is unavailable; please decide." };
+        writeReviewEntry("permission_request.auto_review", {
+          requestId: details.requestId,
+          toolName: details.toolName,
+          reviewer: sessionConfig.autoReviewer ?? "luna",
+          provider: result.provider,
+          outcome: result.outcome,
+          decisionPersistence: "none",
+        });
+        if (result.outcome === "cancelled") {
+          return { approved: false, state: "denied", denialReason: result.reason };
+        }
+        if (result.outcome === "allow") {
+          emitPermissionStateEvent(details, "approved");
+          await extensionLogger.flush();
+          return { approved: true, state: "approved" };
+        }
+        promptMessage += `\n\n${result.reason}`;
       }
 
       reviewPermissionDecision("permission_request.waiting", details);
@@ -2286,7 +2445,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
         notifyPermissionWaitingIfUnfocused(details.message);
       }
 
-      const decision = await turnRuntime.pauseWhile(() => confirmPermission(ctx, details.message, sessionConfig, details.sessionFamilies));
+      const decision = await turnRuntime.pauseWhile(() =>
+        confirmPermission(ctx, promptMessage, sessionConfig, details.sessionFamilies, reviewInput),
+      );
       const persistsSessionApproval = isSessionPersistentDecisionState(decision.state);
       reviewPermissionDecision(decision.approved ? "permission_request.approved" : "permission_request.denied", {
         ...details,
@@ -2371,6 +2532,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       turnRuntime,
       getConfig: () => sessionConfig,
       signal,
+      reviewAction: (input) => reviewAction(currentContext, input, signal),
     }).finally(() => {
       if (signal.aborted) return;
       isProcessingForwardedRequests = false;
@@ -2602,6 +2764,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   pi.on(
     "session_start",
     async (event: SessionStartEvent, ctx: ExtensionContext) => {
+      cancelAutoReviews();
       turnRuntime.stop();
       await ensureModelOptionCompatibilityRegistered();
       sessionApprovals.clear();
@@ -2641,6 +2804,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   );
 
   pi.on("session_shutdown", async (_event, ctx: ExtensionContext) => {
+    cancelAutoReviews();
     turnRuntime.stop();
     ctx.ui.setStatus(PERMISSION_SYSTEM_STATUS_KEY, undefined);
     sessionApprovals.clear();
@@ -2669,6 +2833,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_end", async () => {
+    cancelAutoReviews();
+    recentPermissionPromptDecisions.clear();
     turnRuntime.stop();
   });
 
@@ -2769,6 +2935,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   );
 
   pi.on("input", async (event: InputEvent, ctx: ExtensionContext) => {
+    cancelAutoReviews();
+    recentPermissionPromptDecisions.clear();
     runtimeContext = ctx;
     startForwardedPermissionPolling(ctx);
     ensureFocusTracker(ctx);

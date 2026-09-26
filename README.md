@@ -35,7 +35,7 @@ For example, add this top-level setting alongside your permission rules to disab
 }
 ```
 
-Other optional settings default to `enabled: true`, `debug: false`, `yoloMode: false`, and `desktopNotifications: true`. `yoloMode` in the file sets the startup default; runtime toggles are never saved.
+Other optional settings default to `enabled: true`, `debug: false`, `permissionMode: "ask"`, `autoReviewer: "luna"`, `yoloMode: false`, and `desktopNotifications: true`. Permission mode in the file sets the startup default; runtime mode changes are never saved.
 
 #### File-tool policy exceptions
 
@@ -71,6 +71,7 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
 - [Configuration](#configuration)
   - [Settings in pi-permissions.jsonc](#settings-in-pi-permissionsjsonc)
   - [Desktop Notifications](#desktop-notifications)
+  - [Auto Permission Mode](#auto-permission-mode)
   - [Runtime YOLO Control](#runtime-yolo-control)
   - [Global Policy File](#global-policy-file)
   - [Global Per-Agent Overrides](#global-per-agent-overrides)
@@ -310,6 +311,8 @@ All settings are optional. Missing keys use the defaults below; permission rules
 {
   "enabled": true,
   "debug": false,
+  "permissionMode": "ask",
+  "autoReviewer": "luna",
   "yoloMode": false,
   "yoloBypassProtectedPaths": false,
   "desktopNotifications": true,
@@ -321,7 +324,9 @@ All settings are optional. Missing keys use the defaults below; permission rules
 |-----|---------|-------------|
 | `enabled` | `true` | Master switch. When `false`, the extension skips all registrations and startup work (permission hooks, commands, runtime API, forwarding). |
 | `debug` | `false` | Enables verbose diagnostics and permission review entries in `logs/pi-permission-system-debug.jsonl` |
-| `yoloMode` | `false` | Startup default for yolo mode in new sessions. Runtime toggles (settings modal or runtime API) are session-scoped: they are never written back to this file and never propagate to other running sessions |
+| `permissionMode` | `"ask"` | Startup mode: `ask`, `auto`, or `yolo`. Runtime mode changes are session-local and are not saved. |
+| `autoReviewer` | `"luna"` | Auto reviewer: `luna` or `jev`. Saved by the settings modal. See authentication below. |
+| `yoloMode` | `false` | Legacy startup default for yolo mode in new sessions. Runtime toggles (settings modal or runtime API) are session-scoped: they are never written back to this file and never propagate to other running sessions |
 | `yoloBypassProtectedPaths` | `false` | With YOLO on, bypass the protected-path guard for file tools, bash, and background commands. Explicit denies remain enforced. |
 | `desktopNotifications` | `true` | Sends a native desktop notification when a permission prompt is waiting and this terminal tab is not focused |
 | `forwardedPromptTimeoutSeconds` | `600` | Countdown in seconds before an unanswered subagent prompt is denied. A positive number enables it; `null` disables it. Change it in the settings modal under **Subagent prompt timeout**. |
@@ -380,9 +385,41 @@ errs on the side of notifying.
 > it, tmux swallows the focus events and the extension will notify on every
 > waiting prompt regardless of which pane/window is active.
 
+### Auto Permission Mode
+
+Use `/permissions auto` to enable automatic review for the current session. Use `/permissions ask` for manual approval or `/permissions yolo` for YOLO. `/permission-system` offers the same **Permission mode** selector and an **Auto-mode reviewer** selector. The status indicator shows `auto (luna)` or `auto (jev)`.
+
+To start new sessions in auto mode, add these top-level settings to `~/.pi/agent/pi-permissions.jsonc`:
+
+```json
+{
+  "permissionMode": "auto",
+  "autoReviewer": "luna",
+  "yoloMode": false
+}
+```
+
+`autoReviewer` defaults to `luna`. Set it to `jev` to use Jev. Legacy `yoloMode: true` takes precedence over `permissionMode`; set it to `false` when switching a startup configuration to auto.
+
+| Reviewer | Model | Authentication |
+|----------|-------|----------------|
+| Luna with a Codex main model | `gpt-6-luna` | Uses Pi's `openai-codex` provider and its authenticated credentials, including OAuth. No `OPENAI_API_KEY` required. |
+| Luna with any other main model | `gpt-6-luna` | Requires `OPENAI_API_KEY` in the Pi process environment; calls the OpenAI Responses API. |
+| Jev | `jev-1.13.0` | Requires `TYPESAFE_API_KEY` in the Pi process environment; calls TypeSafe's System One API. |
+
+Review uses the main model's **provider**, not its name: an OpenAI API model still uses `OPENAI_API_KEY`. Codex review runs Luna through Pi's provider; it does not invoke Codex's internal auto-reviewer. Missing credentials, unavailable models, invalid responses, and the 20-second reviewer timeout all fall back to a user prompt. Providers are never silently switched.
+
+Auto review applies to actions whose policy result is `ask`. Existing allow rules continue to allow; explicit denies and protected-path checks remain enforced. A reviewer approval applies once and creates no lasting permission rule. A reviewer denial opens the normal approval dialog, where the user can approve or reject. Without an interactive UI or a forwarding parent, an unresolved request is blocked. Cancelling a turn or changing modes cancels pending reviews.
+
+The reviewer receives the proposed tool arguments, working directory, and bounded recent user messages, assistant text, tool calls, and tool results. Hidden reasoning is excluded. This context is sent to the selected provider, including when the acting model uses a different provider. The reviewer has no execution tools. Low-risk and bounded reversible work, including ordinary temporary-file work, can be approved automatically. Oversized actions fall back to the user rather than being silently truncated.
+
+Subagents forward their action and context to the interactive parent. The parent uses its mode, selected reviewer, model provider, and credentials, while retaining the child's working directory and adding parent user instructions. This works across worktrees without loading API keys in each child. Existing forwarding setup still applies: separate-process routers must supply the parent session ID and a shared forwarding directory; in-process children use the discovered interactive parent. A different working directory alone does not prevent forwarding. Older children without an action snapshot fall back to a manual parent prompt.
+
+**Authentication follow-up:** add a managed credential source for Luna when the main model is not Codex, so `OPENAI_API_KEY` is no longer required. This remains unimplemented; the future change should preserve explicit provider selection and parent-owned subagent credentials.
+
 ### Runtime YOLO Control
 
-Use `/yolo` to toggle YOLO mode on or off for the current session. The command reports the new state and updates the status bar. Use `/permission-system` to open the settings modal and inspect or change yolo mode interactively. In interactive TUI mode, the settings modal uses Pi's renderer-provided theme and does not require a separate global `initTheme()` call before opening.
+Use `/yolo` to toggle YOLO mode on or off for the current session. The command reports the new state and updates the status bar. Use `/permission-system` to open the settings modal and select Ask, Auto, or YOLO interactively. In interactive TUI mode, the settings modal uses Pi's renderer-provided theme and does not require a separate global `initTheme()` call before opening.
 
 To let YOLO access protected paths through both file and shell tools, set this top-level field in `~/.pi/agent/pi-permissions.jsonc`:
 

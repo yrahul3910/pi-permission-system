@@ -25,12 +25,16 @@ import {
 } from "./jsonc-config.js";
 
 export const EXTENSION_ID = "pi-permission-system";
+export type PermissionMode = "ask" | "auto" | "yolo";
 
 export interface PermissionSystemExtensionConfig {
   /** Master switch. When false, the extension skips all registrations and startup work. */
   enabled?: boolean;
   debug: boolean;
   yoloMode: boolean;
+  /** Session mode; optional for compatibility with callers using the legacy yoloMode field. */
+  permissionMode?: PermissionMode;
+  autoReviewer?: "luna" | "jev";
   /** Allow YOLO to skip protected-path checks; explicit policy denies still apply. */
   yoloBypassProtectedPaths: boolean;
   desktopNotifications: boolean;
@@ -52,6 +56,8 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   enabled: true,
   debug: false,
   yoloMode: false,
+  permissionMode: "ask",
+  autoReviewer: "luna",
   yoloBypassProtectedPaths: false,
   desktopNotifications: true,
   forwardedPromptTimeoutSeconds: 600,
@@ -102,6 +108,8 @@ export function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     enabled: DEFAULT_EXTENSION_CONFIG.enabled,
     debug: DEFAULT_EXTENSION_CONFIG.debug,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
+    permissionMode: DEFAULT_EXTENSION_CONFIG.permissionMode,
+    autoReviewer: DEFAULT_EXTENSION_CONFIG.autoReviewer,
     yoloBypassProtectedPaths: DEFAULT_EXTENSION_CONFIG.yoloBypassProtectedPaths,
     desktopNotifications: DEFAULT_EXTENSION_CONFIG.desktopNotifications,
     forwardedPromptTimeoutSeconds:
@@ -114,6 +122,8 @@ export function normalizePermissionSystemConfig(
   raw: unknown,
 ): PermissionSystemExtensionConfig {
   const record = toRecord(raw);
+  const permissionMode: PermissionMode = record.yoloMode === true ? "yolo"
+    : record.permissionMode === "auto" || record.permissionMode === "yolo" ? record.permissionMode : "ask";
   const rawTimeout = record.forwardedPromptTimeoutSeconds;
   let forwardedPromptTimeoutSeconds: number | null =
     DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds;
@@ -127,7 +137,9 @@ export function normalizePermissionSystemConfig(
   return {
     enabled: record.enabled !== false,
     debug: record.debug === true,
-    yoloMode: record.yoloMode === true,
+    yoloMode: permissionMode === "yolo",
+    permissionMode,
+    autoReviewer: record.autoReviewer === "jev" ? "jev" : "luna",
     yoloBypassProtectedPaths: record.yoloBypassProtectedPaths === true,
     // Defaults to enabled; only an explicit `false` turns it off.
     desktopNotifications: record.desktopNotifications !== false,
@@ -239,7 +251,7 @@ function resolveWriteTarget(configPath: string): {
   return { writePath: configPath, isSymlink: false };
 }
 
-/** Save synced settings while leaving the startup YOLO default and all permission rules untouched. */
+/** Save synced settings while leaving startup permission modes and all permission rules untouched. */
 export function savePermissionSystemConfig(
   config: PermissionSystemExtensionConfig,
   configPath = getPermissionSystemConfigPath(),
@@ -248,6 +260,7 @@ export function savePermissionSystemConfig(
   return saveConfigFields(
     {
       debug: normalized.debug,
+      autoReviewer: normalized.autoReviewer,
       yoloBypassProtectedPaths: normalized.yoloBypassProtectedPaths,
       desktopNotifications: normalized.desktopNotifications,
       forwardedPromptTimeoutSeconds: normalized.forwardedPromptTimeoutSeconds,

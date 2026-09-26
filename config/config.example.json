@@ -36,6 +36,8 @@
   },
   "enabled": true,
   "debug": false,
+  "permissionMode": "ask",
+  "autoReviewer": "luna",
   "yoloMode": false,
   "yoloBypassProtectedPaths": false,
   "desktopNotifications": true,
