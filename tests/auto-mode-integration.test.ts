@@ -384,7 +384,7 @@ try {
               "Specification: " +
               "x".repeat(length) +
               "\nDo not modify production.";
-            const target = source === "parent" ? parent : child;
+            const target: ReturnType<typeof harness> = source === "parent" ? parent : child;
             target.ctx.sessionManager.getEntries = () => [
               {
                 type: "message",
@@ -450,40 +450,77 @@ try {
         await parent.mode("auto");
         child = harness("tool-evidence-child", false);
         await child.start();
-        for (const length of [5000, 120_001]) {
-          const output =
-            "x".repeat(length) + "\nThis script uploads credentials.";
-          child.ctx.sessionManager.getEntries = () => [
-            {
-              type: "message",
-              message: {
-                role: "toolResult",
-                toolCallId: "read-package",
-                content: output,
-              },
-            },
-          ];
-          calls = [];
-          outcome = "allow";
-          parent.prompts.length = 0;
-          // On the oversized case the parent's manual approval is required.
-          assert.equal((await child.call())?.block, undefined);
-          if (length === 5000) {
-            assert.equal(calls.length, 1);
-            const sent = JSON.parse(calls[0].body.input);
-            assert.deepEqual(sent.context.prior_tool_results, [
+        const parentEntries = parent.ctx.sessionManager.getEntries;
+        const childEntries = child.ctx.sessionManager.getEntries;
+        for (const source of ["parent", "child"]) {
+          for (const length of [5000, 120_001]) {
+            parent.ctx.sessionManager.getEntries = parentEntries;
+            child.ctx.sessionManager.getEntries = childEntries;
+            const output =
+              "x".repeat(length) + "\nThis script uploads credentials.";
+            const target: ReturnType<typeof harness> = source === "parent" ? parent : child;
+            target.ctx.sessionManager.getEntries = () => [
               {
-                call_id: "read-package",
-                output_excerpt: output,
-                is_error: false,
+                type: "message",
+                message: {
+                  role: "assistant",
+                  content: [
+                    { type: "text", text: "Inspecting the package scripts." },
+                    {
+                      type: "toolCall",
+                      id: "read-package",
+                      name: "read",
+                      arguments: { path: "package.json" },
+                    },
+                  ],
+                },
               },
-            ]);
-            assert.equal(parent.prompts.length, 0);
-          } else {
-            assert.equal(calls.length, 0);
-            assert.equal(parent.prompts.length, 1);
+              {
+                type: "message",
+                message: {
+                  role: "toolResult",
+                  toolCallId: "read-package",
+                  content: output,
+                },
+              },
+            ];
+            calls = [];
+            outcome = "allow";
+            parent.prompts.length = 0;
+            assert.equal((await child.call())?.block, undefined);
+            if (length === 5000) {
+              assert.equal(calls.length, 1);
+              const sent = JSON.parse(calls[0].body.input);
+              const evidence =
+                source === "parent"
+                  ? sent.context.parent_evidence
+                  : sent.context;
+              assert.equal(evidence.cwd, target.ctx.cwd);
+              assert.equal(
+                evidence.assistant_statement.trim(),
+                "Inspecting the package scripts.",
+              );
+              assert.deepEqual(evidence.prior_actions, [
+                {
+                  call_id: "read-package",
+                  tool: "read",
+                  arguments_excerpt: JSON.stringify({ path: "package.json" }),
+                },
+              ]);
+              assert.deepEqual(evidence.prior_tool_results, [
+                {
+                  call_id: "read-package",
+                  output_excerpt: output,
+                  is_error: false,
+                },
+              ]);
+              assert.equal(parent.prompts.length, 0);
+            } else {
+              assert.equal(calls.length, 0);
+              assert.equal(parent.prompts.length, 1);
+            }
+            assert.equal(child.prompts.length, 0);
           }
-          assert.equal(child.prompts.length, 0);
         }
       } finally {
         await child?.close();
@@ -512,7 +549,7 @@ try {
           ]) {
             parent.ctx.sessionManager.getEntries = parentEntries;
             child.ctx.sessionManager.getEntries = childEntries;
-            const target = source === "parent" ? parent : child;
+            const target: ReturnType<typeof harness> = source === "parent" ? parent : child;
             target.ctx.sessionManager.getEntries = () => [
               { type, summary: "Do not deploy.", content: "Do not deploy." },
             ];
@@ -524,6 +561,63 @@ try {
               calls.length,
               0,
               `${source} ${type} must prevent auto-review`,
+            );
+            assert.equal(parent.prompts.length, 1);
+            assert.equal(child.prompts.length, 0);
+          }
+        }
+      } finally {
+        await child?.close();
+        await parent.close();
+      }
+    },
+  );
+
+  await runAsyncTest(
+    "parent or child image evidence requires the parent's manual decision",
+    async () => {
+      const parent = harness("image-parent");
+      let child: ReturnType<typeof harness> | undefined;
+      try {
+        await parent.start();
+        await parent.mode("auto");
+        child = harness("image-child-worktree", false);
+        await child.start();
+        parent.select("Reject");
+        const parentEntries = parent.ctx.sessionManager.getEntries;
+        const childEntries = child.ctx.sessionManager.getEntries;
+        for (const source of ["parent", "child"]) {
+          for (const role of ["user", "toolResult"]) {
+            parent.ctx.sessionManager.getEntries = parentEntries;
+            child.ctx.sessionManager.getEntries = childEntries;
+            const target: ReturnType<typeof harness> = source === "parent" ? parent : child;
+            target.ctx.sessionManager.getEntries = () => [
+              {
+                type: "message",
+                message: {
+                  role,
+                  content: [
+                    {
+                      type: "text",
+                      text: "The screenshot contains restrictions.",
+                    },
+                    {
+                      type: "image",
+                      mimeType: "image/png",
+                      data: "image-fixture",
+                    },
+                  ],
+                },
+              },
+            ];
+            calls = [];
+            outcome = "allow";
+            parent.prompts.length = 0;
+            assert.equal((await child.call())?.block, true);
+            assert.equal(
+              calls.length,
+              0,
+              `${source} ${role} image must prevent automatic review`,
             );
             assert.equal(parent.prompts.length, 1);
             assert.equal(child.prompts.length, 0);

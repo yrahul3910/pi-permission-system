@@ -1700,6 +1700,12 @@ export async function processForwardedPermissionRequests(
             context: {
               ...request.autoReviewInput.context,
               parent_user_messages: parentContext.user_messages,
+              parent_evidence: {
+                cwd: parentContext.cwd,
+                assistant_statement: parentContext.assistant_statement,
+                prior_actions: parentContext.prior_actions,
+                prior_tool_results: parentContext.prior_tool_results,
+              },
               truncated: request.autoReviewInput.context.truncated || parentContext.truncated,
             },
           });

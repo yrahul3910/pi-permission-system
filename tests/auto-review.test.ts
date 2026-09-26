@@ -285,6 +285,11 @@ runTest(
       "current",
     );
     assert.equal(input.context.cwd, "/other/worktree");
+    assert.equal(
+      input.context.truncated,
+      false,
+      "hidden reasoning and captured tool calls are intentionally supported",
+    );
     assert.equal(input.context.prior_tool_results.length, 1);
     assert.ok(!JSON.stringify(input).includes("hidden-private"));
     assert.ok(!JSON.stringify(input).includes("future-success"));
@@ -676,5 +681,54 @@ runTest(
     );
     assert.equal(input.context.truncated, false);
     assert.deepEqual(input.context.user_messages, ["Read README.md."]);
+  },
+);
+
+await runAsyncTest(
+  "images, unsupported parts and malformed content require manual review",
+  async () => {
+    for (const role of ["user", "toolResult", "assistant"]) {
+      for (const content of [
+        [
+          { type: "text", text: "See the restriction in this image." },
+          { type: "image", mimeType: "image/png", data: "image-fixture" },
+        ],
+        [{ type: "audio", data: "audio-fixture" }],
+        [{ type: "future_content", text: "Do not deploy." }],
+        [{ type: "text", text: 123 }],
+        undefined,
+      ]) {
+        const input = buildAutoReviewInput(
+          {
+            cwd: "/work/project",
+            sessionManager: {
+              getEntries: () => [
+                { type: "message", message: { role, content } },
+              ],
+            },
+          } as never,
+          "bash",
+          { command: "deploy" },
+        );
+        assert.equal(input.context.truncated, true);
+        let calls = 0;
+        const result = await reviewAutoPermission(
+          plain,
+          input,
+          "luna",
+          undefined,
+          {
+            env: { OPENAI_API_KEY: "test-key" },
+            fetch: async () => {
+              calls++;
+              return jsonResponse(openAIResponse("allow"));
+            },
+          },
+        );
+        assert.equal(result.outcome, "ask");
+        assert.equal(calls, 0);
+        assert.ok(!JSON.stringify(input).includes("image-fixture"));
+      }
+    }
   },
 );

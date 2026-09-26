@@ -12,6 +12,8 @@ export const MAX_REVIEW_INPUT_CHARS = 120_000;
 
 // Pi excludes these bookkeeping entries from model context. Other entry types
 // may carry evidence that this serializer cannot represent completely.
+// Source of truth: Pi core/session-manager.ts buildSessionContext (appendMessage)
+// and core/messages.ts convertToLlm; recheck this list when upgrading Pi.
 const NON_CONTEXT_ENTRY_TYPES = new Set([
   "custom",
   "label",
@@ -29,6 +31,12 @@ export interface AutoReviewInput {
     prior_tool_results: unknown[];
     truncated: boolean;
     parent_user_messages?: string[];
+    parent_evidence?: {
+      cwd: string;
+      assistant_statement: string;
+      prior_actions: unknown[];
+      prior_tool_results: unknown[];
+    };
   };
   action: { tool: string; arguments: unknown };
 }
@@ -71,6 +79,26 @@ export function buildAutoReviewInput(
     prior_tool_results: [],
     truncated: false,
   };
+  const readContextText = (content: unknown, role: string): string => {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) {
+      context.truncated = true;
+      return "";
+    }
+    for (const part of content) {
+      const record = toRecord(part);
+      if (record.type === "text" && typeof record.text === "string") continue;
+      // Reasoning is intentionally private; tool calls are captured separately.
+      if (
+        role === "assistant" &&
+        (record.type === "thinking" || record.type === "toolCall")
+      )
+        continue;
+      // Images and other unsupported parts may carry constraints or risk evidence.
+      context.truncated = true;
+    }
+    return textContent(content);
+  };
   for (const value of entries) {
     const entry = toRecord(value);
     if (entry.type !== "message") {
@@ -105,9 +133,12 @@ export function buildAutoReviewInput(
     // User constraints can occur anywhere in any message. Keep authorization
     // text intact; the total input limit falls back to manual approval.
     if (message.role === "user")
-      context.user_messages.push(textContent(message.content));
+      context.user_messages.push(readContextText(message.content, "user"));
     if (message.role === "assistant") {
-      context.assistant_statement = textContent(message.content);
+      context.assistant_statement = readContextText(
+        message.content,
+        "assistant",
+      );
       for (const part of Array.isArray(message.content)
         ? message.content
         : []) {
@@ -123,7 +154,7 @@ export function buildAutoReviewInput(
     if (message.role === "toolResult")
       context.prior_tool_results.push({
         call_id: message.toolCallId,
-        output_excerpt: textContent(message.content),
+        output_excerpt: readContextText(message.content, "toolResult"),
         is_error: message.isError === true,
       });
   }
@@ -137,6 +168,7 @@ export function isAutoReviewInput(value: unknown): value is AutoReviewInput {
   const record = toRecord(value);
   const context = toRecord(record.context);
   const action = toRecord(record.action);
+  const parentEvidence = toRecord(context.parent_evidence);
   try {
     return (
       typeof context.cwd === "string" &&
@@ -152,6 +184,12 @@ export function isAutoReviewInput(value: unknown): value is AutoReviewInput {
           context.parent_user_messages.every(
             (v: unknown) => typeof v === "string",
           ))) &&
+      (context.parent_evidence === undefined ||
+        (typeof parentEvidence.cwd === "string" &&
+          parentEvidence.cwd.length > 0 &&
+          typeof parentEvidence.assistant_statement === "string" &&
+          Array.isArray(parentEvidence.prior_actions) &&
+          Array.isArray(parentEvidence.prior_tool_results))) &&
       typeof action.tool === "string" &&
       action.tool.length > 0 &&
       Object.hasOwn(action, "arguments") &&

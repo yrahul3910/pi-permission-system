@@ -103,8 +103,6 @@ function applySetting(
   switch (id) {
     case "debug":
       return { ...config, debug: value === "on" };
-    case "yoloMode":
-      return { ...config, yoloMode: value === "on", permissionMode: value === "on" ? "yolo" : "ask" };
     case "permissionMode":
       return { ...config, permissionMode: value === "auto" || value === "yolo" ? value : "ask", yoloMode: value === "yolo" };
     case "autoReviewer":
