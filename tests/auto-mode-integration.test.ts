@@ -364,6 +364,82 @@ try {
     },
   );
 
+  await runAsyncTest(
+    "forwarded reviews preserve long parent and child constraints or ask when oversized",
+    async () => {
+      const parent = harness("constraints-parent");
+      let child: ReturnType<typeof harness> | undefined;
+      try {
+        await parent.start();
+        await parent.mode("auto");
+        child = harness("constraints-child-worktree", false);
+        await child.start();
+        const parentEntries = parent.ctx.sessionManager.getEntries;
+        const childEntries = child.ctx.sessionManager.getEntries;
+        for (const source of ["parent", "child"]) {
+          for (const length of [5000, 120_001]) {
+            parent.ctx.sessionManager.getEntries = parentEntries;
+            child.ctx.sessionManager.getEntries = childEntries;
+            const constraint =
+              "Specification: " +
+              "x".repeat(length) +
+              "\nDo not modify production.";
+            const target = source === "parent" ? parent : child;
+            target.ctx.sessionManager.getEntries = () => [
+              {
+                type: "message",
+                message: { role: "user", content: constraint },
+              },
+            ];
+            calls = [];
+            outcome = "allow";
+            parent.prompts.length = 0;
+            assert.equal((await child.call())?.block, undefined);
+            if (length === 5000) {
+              assert.equal(calls.length, 1);
+              const sent = JSON.parse(calls[0].body.input);
+              assert.deepEqual(
+                source === "parent"
+                  ? sent.context.parent_user_messages
+                  : sent.context.user_messages,
+                [constraint],
+              );
+              assert.equal(parent.prompts.length, 0);
+            } else {
+              assert.equal(
+                calls.length,
+                0,
+                "oversized authorization requires manual approval",
+              );
+              assert.equal(parent.prompts.length, 1);
+            }
+            assert.equal(child.prompts.length, 0);
+          }
+        }
+      } finally {
+        await child?.close();
+        await parent.close();
+      }
+    },
+  );
+
+  await runAsyncTest(
+    "a YOLO child without a forwarding parent cannot bypass parent approval",
+    async () => {
+      const child = harness("orphan-yolo-child", false);
+      try {
+        await child.start();
+        await child.mode("yolo");
+        calls = [];
+        assert.equal((await child.call())?.block, true);
+        assert.equal(calls.length, 0);
+        assert.equal(child.prompts.length, 0);
+      } finally {
+        await child.close();
+      }
+    },
+  );
+
   runTest(
     "reviewer is saved but runtime permission mode does not overwrite startup mode",
     () => {

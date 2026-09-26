@@ -87,8 +87,10 @@ export function buildAutoReviewInput(
       message.toolCallId === toolCallId
     )
       break;
+    // User constraints can occur anywhere in any message. Keep authorization
+    // text intact; the total input limit falls back to manual approval.
     if (message.role === "user")
-      context.user_messages.push(clip(textContent(message.content)));
+      context.user_messages.push(textContent(message.content));
     if (message.role === "assistant") {
       context.assistant_statement = clip(textContent(message.content));
       for (const part of Array.isArray(message.content)
@@ -111,16 +113,10 @@ export function buildAutoReviewInput(
       });
   }
   context.truncated ||=
-    context.user_messages.length > 8 ||
-    context.prior_actions.length > 6 ||
-    context.prior_tool_results.length > 6;
-  context.user_messages =
-    context.user_messages.length > 8
-      ? [context.user_messages[0], ...context.user_messages.slice(-7)]
-      : context.user_messages;
+    context.prior_actions.length > 6 || context.prior_tool_results.length > 6;
   context.prior_actions = context.prior_actions.slice(-6);
   context.prior_tool_results = context.prior_tool_results.slice(-6);
-  // Exact current arguments are never clipped. Oversize requests fall back to the user.
+  // User messages and current arguments are never clipped. Oversize requests ask the user.
   return { context, action: { tool, arguments: args } };
 }
 
@@ -166,10 +162,9 @@ function parseDecision(
   provider: AutoReviewResult["provider"],
 ): AutoReviewResult {
   const record = toRecord(value);
-  if (
-    Object.keys(record).length !== 1 ||
-    !["allow", "deny"].includes(String(record.outcome))
-  ) {
+  // Codex produces free-form JSON: tolerate extra fields, but require an exact
+  // decision value. Never expose or use those fields as authorization.
+  if (record.outcome !== "allow" && record.outcome !== "deny") {
     return {
       outcome: "ask",
       reason: "Auto reviewer returned an invalid decision.",

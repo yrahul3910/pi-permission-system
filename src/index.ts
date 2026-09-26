@@ -1938,15 +1938,16 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   let runtimeApi: PiPermissionSystemRuntimeApi | null = null;
   /** Update this binding's settings and the diagnostic fallback without sharing approval state. */
   const updateSessionConfig = (config: PermissionSystemExtensionConfig): void => {
+    const normalized = normalizePermissionSystemConfig(config);
     if (
-      config.permissionMode !== sessionConfig.permissionMode ||
-      config.autoReviewer !== sessionConfig.autoReviewer ||
-      config.yoloMode !== sessionConfig.yoloMode
+      normalized.permissionMode !== sessionConfig.permissionMode ||
+      normalized.autoReviewer !== sessionConfig.autoReviewer ||
+      normalized.yoloMode !== sessionConfig.yoloMode
     ) {
       cancelAutoReviews();
       recentPermissionPromptDecisions.clear();
     }
-    sessionConfig = normalizePermissionSystemConfig(config);
+    sessionConfig = normalized;
     setExtensionConfig(sessionConfig);
   };
   let activeSkillEntries: SkillPromptEntry[] = [];
@@ -2385,6 +2386,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }
 
     const decisionPromise = (async (): Promise<PermissionPromptDecision> => {
+      // The parent's mode governs subagents, even when a child started in YOLO.
+      // Without a forwarding target, an ask is denied instead of bypassing the parent.
       if (!isChild && shouldAutoApprovePermissionState("ask", sessionConfig)) {
         reviewPermissionDecision("permission_request.auto_approved", {
           ...details,

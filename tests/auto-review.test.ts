@@ -308,3 +308,119 @@ await runAsyncTest(
     assert.equal(result.outcome, "ask");
   },
 );
+
+await runAsyncTest(
+  "user constraints survive long messages and more than eight user turns",
+  async () => {
+    const messages = [
+      "Inspect the project.",
+      "Do not modify production.",
+      ...Array.from({ length: 9 }, (_, i) => `More detail ${i}.`),
+      "Specification: " +
+        "x".repeat(5000) +
+        "\nDo not delete the deployment config.",
+    ];
+    const input = buildAutoReviewInput(
+      {
+        cwd: "/work/project",
+        sessionManager: {
+          getEntries: () =>
+            messages.map((content) => ({
+              type: "message",
+              message: { role: "user", content },
+            })),
+        },
+      } as never,
+      "read",
+      { path: "README.md" },
+    );
+    assert.deepEqual(input.context.user_messages, messages);
+    let called = false;
+    await reviewAutoPermission(plain, input, "luna", undefined, {
+      env: { OPENAI_API_KEY: "key" },
+      fetch: async (_url, options) => {
+        called = true;
+        const sent = JSON.parse(JSON.parse(String(options?.body)).input);
+        assert.deepEqual(sent.context.user_messages, messages);
+        return jsonResponse(openAIResponse("deny"));
+      },
+    });
+    assert.equal(called, true);
+  },
+);
+
+await runAsyncTest(
+  "oversized user authorization asks without sending a clipped request",
+  async () => {
+    const input = buildAutoReviewInput(
+      {
+        cwd: "/work/project",
+        sessionManager: {
+          getEntries: () => [
+            {
+              type: "message",
+              message: {
+                role: "user",
+                content: "x".repeat(120_001) + "Do not modify production.",
+              },
+            },
+          ],
+        },
+      } as never,
+      "read",
+      { path: "README.md" },
+    );
+    for (const reviewer of ["luna", "jev"] as const) {
+      const result = await reviewAutoPermission(
+        plain,
+        input,
+        reviewer,
+        undefined,
+        {
+          fetch: async () => {
+            assert.fail("Oversized authorization must not reach a provider");
+          },
+        },
+      );
+      assert.equal(result.outcome, "ask");
+      assert.match(result.reason, /limits/);
+    }
+  },
+);
+
+await runAsyncTest(
+  "Codex ignores extra response fields but requires an exact decision string",
+  async () => {
+    const ctx = {
+      model: { provider: "openai-codex" },
+      modelRegistry: { getApiKey: async () => "codex-test" },
+    } as never;
+    for (const outcome of [
+      "allow",
+      "deny",
+      "maybe",
+      ["allow"],
+      null,
+      true,
+      undefined,
+    ]) {
+      const result = await reviewAutoPermission(ctx, state, "luna", undefined, {
+        completeCodex: async () => ({
+          stopReason: "stop",
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                outcome,
+                explanation: "extra provider text",
+                confidence: 1,
+              }),
+            },
+          ],
+        }),
+      });
+      assert.equal(result.outcome, outcome === "allow" ? "allow" : "ask");
+      assert.ok(!result.reason.includes("extra provider text"));
+    }
+  },
+);
