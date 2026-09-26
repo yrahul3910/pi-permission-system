@@ -176,6 +176,18 @@
       "type": "boolean",
       "default": false,
       "description": "When YOLO is on, bypass protected-path checks for file and shell tools. Explicit policy denies still apply."
+    },
+    "permissionMode": {
+      "type": "string",
+      "enum": ["ask", "auto", "yolo"],
+      "default": "ask",
+      "description": "Startup permission mode. Runtime mode changes are session-local. Legacy yoloMode:true takes precedence."
+    },
+    "autoReviewer": {
+      "type": "string",
+      "enum": ["luna", "jev"],
+      "default": "luna",
+      "description": "Auto reviewer. Luna uses the main model's Codex authentication when applicable, otherwise OPENAI_API_KEY. Jev uses TYPESAFE_API_KEY. Denials and failures ask the user."
     }
   },
   "$defs": {

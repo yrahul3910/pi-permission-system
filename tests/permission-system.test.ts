@@ -1276,7 +1276,7 @@ function createModalTestTheme(): Record<string, unknown> {
   };
 }
 
-await runAsyncTest("Modal yolo toggle applies in-session even when persisting synced fields fails", async () => {
+await runAsyncTest("Modal mode selection applies in-session even when persisting synced fields fails", async () => {
   const statusUpdates: Array<{ key: string; value: string | undefined }> = [];
   const notifications: Array<{ message: string; level: string }> = [];
   const harness = createToolCallHarness(
@@ -1337,7 +1337,7 @@ await runAsyncTest("Modal yolo toggle applies in-session even when persisting sy
     await Promise.resolve(command.handler("", commandCtx as never));
     assert.ok(holder.component, "settings modal should have been opened");
 
-    // Move from "Debug logging" to "YOLO mode" (second setting) and toggle it.
+    // Move from "Debug logging" to "Permission mode" and select auto.
     holder.component.handleInput?.("\x1b[B");
     holder.component.handleInput?.(" ");
 
@@ -1345,11 +1345,11 @@ await runAsyncTest("Modal yolo toggle applies in-session even when persisting sy
     const errors = notifications.filter((entry) => entry.level === "error");
     assert.equal(errors.length, 1);
     assert.match(errors[0]?.message ?? "", /Refusing to save permission-system config/);
-    // …but the session-local yolo toggle must still apply in memory, because
-    // yolo mode needs no disk at all.
-    assert.equal(api.getYoloMode(), true);
+    // …but the session-local mode must still apply in memory.
+    assert.equal(api.getYoloMode(), false);
+    assert.equal(getPiPermissionSystemRuntimeApi()?.getPermissionMode?.(), "auto");
     assert.equal(statusUpdates.at(-1)?.key, "pi-permission-system");
-    assert.equal(statusUpdates.at(-1)?.value, "yolo");
+    assert.equal(statusUpdates.at(-1)?.value, "auto (luna)");
     // And the corrupt file must be left untouched.
     assert.equal(readFileSync(harness.extensionConfigPath, "utf8"), corruptContent);
   } finally {
@@ -1676,10 +1676,12 @@ runTest("Permission-system extension config defaults debug and yolo mode off", (
 
     const raw = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
     assert.deepEqual(Object.keys(raw).sort(), [
+      "autoReviewer",
       "debug",
       "desktopNotifications",
       "enabled",
       "forwardedPromptTimeoutSeconds",
+      "permissionMode",
       "yoloBypassProtectedPaths",
       "yoloMode",
     ]);
@@ -1713,6 +1715,8 @@ runTest("Permission-system extension config loads debug and yolo mode when expli
       enabled: true,
       debug: true,
       yoloMode: true,
+      permissionMode: "yolo",
+      autoReviewer: "luna",
       yoloBypassProtectedPaths: false,
       desktopNotifications: true,
       forwardedPromptTimeoutSeconds: DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
@@ -1745,6 +1749,8 @@ runTest("Permission-system extension config accepts JSONC comments and trailing 
       enabled: true,
       debug: true,
       yoloMode: true,
+      permissionMode: "yolo",
+      autoReviewer: "luna",
       yoloBypassProtectedPaths: false,
       desktopNotifications: true,
       forwardedPromptTimeoutSeconds: DEFAULT_EXTENSION_CONFIG.forwardedPromptTimeoutSeconds,
@@ -1830,6 +1836,8 @@ runTest("Permission-system extension config save persists normalized synced conf
       enabled: true,
       debug: true,
       yoloMode: false,
+      permissionMode: "ask",
+      autoReviewer: "luna",
       yoloBypassProtectedPaths: false,
       desktopNotifications: true,
       forwardedPromptTimeoutSeconds: 30,

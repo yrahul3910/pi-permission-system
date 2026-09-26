@@ -53,12 +53,19 @@ function buildSettingItems(
       values: ON_OFF,
     },
     {
-      id: "yoloMode",
-      label: "YOLO mode",
+      id: "permissionMode",
+      label: "Permission mode",
       description:
-        "Auto-approve ask-state permission checks, including subagent approval forwarding (this session only; never synced to other sessions)",
-      currentValue: toOnOff(config.yoloMode),
-      values: ON_OFF,
+        "Ask the user, review automatically with user fallback, or approve all asks with YOLO (this session only)",
+      currentValue: config.yoloMode ? "yolo" : config.permissionMode ?? "ask",
+      values: ["ask", "auto", "yolo"],
+    },
+    {
+      id: "autoReviewer",
+      label: "Auto-mode reviewer",
+      description: "Luna uses Codex when the main model uses Codex, otherwise OPENAI_API_KEY. Jev uses TYPESAFE_API_KEY.",
+      currentValue: config.autoReviewer ?? "luna",
+      values: ["luna", "jev"],
     },
     {
       id: "yoloBypassProtectedPaths",
@@ -96,8 +103,10 @@ function applySetting(
   switch (id) {
     case "debug":
       return { ...config, debug: value === "on" };
-    case "yoloMode":
-      return { ...config, yoloMode: value === "on" };
+    case "permissionMode":
+      return { ...config, permissionMode: value === "auto" || value === "yolo" ? value : "ask", yoloMode: value === "yolo" };
+    case "autoReviewer":
+      return { ...config, autoReviewer: value === "jev" ? "jev" : "luna" };
     case "yoloBypassProtectedPaths":
       return { ...config, yoloBypassProtectedPaths: value === "on" };
     case "desktopNotifications":
@@ -118,7 +127,8 @@ function syncSettingValues(
   config: PermissionSystemExtensionConfig,
 ): void {
   settingsList.updateValue("debug", toOnOff(config.debug));
-  settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
+  settingsList.updateValue("permissionMode", config.yoloMode ? "yolo" : config.permissionMode ?? "ask");
+  settingsList.updateValue("autoReviewer", config.autoReviewer ?? "luna");
   settingsList.updateValue(
     "yoloBypassProtectedPaths",
     toOnOff(config.yoloBypassProtectedPaths),

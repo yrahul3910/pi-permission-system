@@ -178,7 +178,7 @@ export function extractFrontmatter(markdown: string): string {
   return normalized.slice(4, end);
 }
 
-export const PERMISSION_SYSTEM_COMMAND_DESCRIPTION = "Configure pi-permission-system debug logging and yolo-mode behavior";
+export const PERMISSION_SYSTEM_COMMAND_DESCRIPTION = "Configure pi-permission-system permission modes, automatic reviewer, and debug logging";
 
 /**
  * Builds the `/permission-system` command handler shared by the standalone

@@ -1,3 +1,5 @@
+import type { PermissionMode } from "./extension-config.js";
+
 export interface YoloModeControlOptions {
   source?: string;
 }
@@ -10,6 +12,8 @@ export interface YoloModeControlResult {
 }
 
 export interface PiPermissionSystemRuntimeApi {
+  getPermissionMode?(): PermissionMode;
+  setPermissionMode?(mode: PermissionMode): void;
   getYoloMode(): boolean;
   setYoloMode(
     enabled: boolean,

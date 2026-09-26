@@ -9,7 +9,8 @@ export const PERMISSION_SYSTEM_YOLO_STATUS_VALUE = "yolo";
 type PermissionStatusContext = Pick<ExtensionContext, "hasUI" | "ui"> | Pick<ExtensionCommandContext, "ui">;
 
 export function getPermissionSystemStatus(config: PermissionSystemExtensionConfig): string | undefined {
-  return isYoloModeEnabled(config) ? PERMISSION_SYSTEM_YOLO_STATUS_VALUE : undefined;
+  return isYoloModeEnabled(config) ? PERMISSION_SYSTEM_YOLO_STATUS_VALUE
+    : config.permissionMode === "auto" ? `auto (${config.autoReviewer ?? "luna"})` : undefined;
 }
 
 export function syncPermissionSystemStatus(
