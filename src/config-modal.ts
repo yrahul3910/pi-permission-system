@@ -10,6 +10,7 @@ import {
   createPermissionSystemCommandHandler,
   PERMISSION_SYSTEM_COMMAND_DESCRIPTION,
 } from "./common.js";
+import { isAutoReviewer } from "./auto-review.js";
 import type { PermissionSystemExtensionConfig } from "./extension-config.js";
 import { ZellijModal, ZellijSettingsModal } from "./zellij-modal.js";
 
@@ -43,6 +44,7 @@ function buildSettingItems(
   const timeoutValues = [
     ...new Set(["off", "15", "30", "60", "120", "300", "600", timeoutValue]),
   ];
+  const reviewer = config.autoReviewer ?? "luna";
   return [
     {
       id: "debug",
@@ -63,9 +65,10 @@ function buildSettingItems(
     {
       id: "autoReviewer",
       label: "Auto-mode reviewer",
-      description: "Luna uses Codex when the main model uses Codex, otherwise OPENAI_API_KEY. Jev uses TYPESAFE_API_KEY.",
-      currentValue: config.autoReviewer ?? "luna",
-      values: ["luna", "jev"],
+      description:
+        "Luna uses Codex when the main model uses Codex, otherwise OPENAI_API_KEY. Jev uses TYPESAFE_API_KEY. Set a provider/model in the config file to review with any Pi model.",
+      currentValue: reviewer,
+      values: [...new Set(["luna", "jev", reviewer])],
     },
     {
       id: "yoloBypassProtectedPaths",
@@ -106,7 +109,7 @@ function applySetting(
     case "permissionMode":
       return { ...config, permissionMode: value === "auto" || value === "yolo" ? value : "ask", yoloMode: value === "yolo" };
     case "autoReviewer":
-      return { ...config, autoReviewer: value === "jev" ? "jev" : "luna" };
+      return { ...config, autoReviewer: isAutoReviewer(value) ? value : "luna" };
     case "yoloBypassProtectedPaths":
       return { ...config, yoloBypassProtectedPaths: value === "on" };
     case "desktopNotifications":
