@@ -1,7 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-// Pi's extension loader maps this static import to the host's pi-ai instance, whose API registry includes
-// providers registered by the host and other extensions. A lazy import() may bypass that mapping.
-import { completeSimple, type Api, type Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { randomUUID } from "node:crypto";
 import { toRecord } from "./common.js";
 import { AUTO_REVIEW_POLICY } from "./auto-review-policy.js";
@@ -413,7 +411,10 @@ export async function reviewAutoPermission(
         };
       if (controller.signal.aborted) throw new Error("cancelled");
       // SAFETY: the context and options below match completeSimple's Context and SimpleStreamOptions.
-      const complete = dependencies.completeModel ?? (completeSimple as CompleteModel);
+      const complete =
+        dependencies.completeModel ??
+        ((await import("@earendil-works/pi-ai"))
+          .completeSimple as CompleteModel);
       const response = toRecord(
         await complete(
           model,
