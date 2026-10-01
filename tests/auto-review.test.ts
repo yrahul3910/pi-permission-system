@@ -175,16 +175,16 @@ await runAsyncTest(
 );
 
 await runAsyncTest(
-  "provider/model reviewers resolve through Pi's registry and ask when unknown",
+  "provider/model reviewers accept keyless auth and fenced replies, and ask when unknown",
   async () => {
-    const reviewModel = { id: "anthropic/claude-x", provider: "openrouter", api: "openai-completions" };
+    const reviewModel = { id: "anthropic/claude-x", provider: "amazon-bedrock", api: "bedrock-converse-stream" };
     // SAFETY: reviewAutoPermission reads only model and these registry methods.
     const ctx = {
       model: { provider: "openai-codex", api: "openai-codex-responses" },
       modelRegistry: {
         find: (provider: string, id: string) =>
           provider === reviewModel.provider && id === reviewModel.id ? reviewModel : undefined,
-        getApiKeyAndHeaders: async () => ({ apiKey: "openrouter-test" }),
+        getApiKeyAndHeaders: async () => ({ ok: true, env: { AWS_PROFILE: "review" } }),
       },
     } as never;
 
@@ -195,19 +195,20 @@ await runAsyncTest(
       },
       completeModel: async (model, _context, requestOptions) => {
         assert.equal(model, reviewModel);
-        assert.equal(requestOptions.apiKey, "openrouter-test");
+        assert.equal(requestOptions.apiKey, undefined);
+        assert.deepEqual(requestOptions.env, { AWS_PROFILE: "review" });
 
-        return { stopReason: "stop", content: [{ type: "text", text: '{"outcome":"allow"}' }] };
+        return { stopReason: "stop", content: [{ type: "text", text: '```json\n{"outcome":"allow"}\n```' }] };
       },
     };
 
-    const result = await reviewAutoPermission(ctx, state, "openrouter/anthropic/claude-x", undefined, options);
+    const result = await reviewAutoPermission(ctx, state, "amazon-bedrock/anthropic/claude-x", undefined, options);
     assert.equal(result.outcome, "allow");
-    assert.equal(result.provider, "openrouter");
+    assert.equal(result.provider, "amazon-bedrock");
 
-    const unknown = await reviewAutoPermission(ctx, state, "openrouter/missing", undefined, options);
+    const unknown = await reviewAutoPermission(ctx, state, "amazon-bedrock/missing", undefined, options);
     assert.equal(unknown.outcome, "ask");
-    assert.match(unknown.reason, /does not know the auto-review model openrouter\/missing/);
+    assert.match(unknown.reason, /does not know the auto-review model amazon-bedrock\/missing/);
   },
 );
 

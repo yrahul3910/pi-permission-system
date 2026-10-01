@@ -370,11 +370,17 @@ export async function reviewAutoPermission(
         : "openai";
   const run = async (): Promise<AutoReviewResult> => {
     if (isModelReference || provider === "codex") {
+      // SAFETY: every member is optional and checked before use, covering registry shapes across Pi versions.
       const registry = ctx.modelRegistry as {
         find?: (provider: string, id: string) => Model<Api> | undefined;
         getApiKeyAndHeaders?: (
           model: Model<Api>,
-        ) => Promise<{ apiKey?: string; headers?: Record<string, string> }>;
+        ) => Promise<{
+          ok?: boolean;
+          apiKey?: string;
+          headers?: Record<string, string>;
+          env?: Record<string, string>;
+        }>;
         getApiKey?: (model: Model<Api>) => Promise<string | undefined>;
       };
       let model: Model<Api>;
@@ -401,7 +407,9 @@ export async function reviewAutoPermission(
       const auth = registry?.getApiKeyAndHeaders
         ? await registry.getApiKeyAndHeaders(model)
         : { apiKey: await registry?.getApiKey?.(model) };
-      if (!auth.apiKey)
+
+      // Ambient credentials such as AWS profiles resolve with ok and no apiKey; older Pi results have no ok field.
+      if (!(auth.ok ?? Boolean(auth.apiKey)))
         return {
           outcome: "ask",
           reason: isModelReference
@@ -431,6 +439,7 @@ export async function reviewAutoPermission(
           {
             apiKey: auth.apiKey,
             headers: auth.headers,
+            env: auth.env,
             reasoning: "low",
             maxTokens: 2048,
             signal: controller.signal,
@@ -445,7 +454,11 @@ export async function reviewAutoPermission(
           reason: "Auto review did not complete successfully.",
           provider,
         };
-      return parseDecision(JSON.parse(textContent(response.content)), provider);
+
+      const text = textContent(response.content);
+
+      // Registry models have no enforced output schema; tolerate prose or code fences around the decision object.
+      return parseDecision(JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] ?? text), provider);
     }
     const key =
       env[
