@@ -406,7 +406,7 @@ To start new sessions in auto mode, add these top-level settings to `~/.pi/agent
 | Luna with a Codex main model | `gpt-6-luna` | Uses Pi's `openai-codex` provider and its authenticated credentials, including OAuth. No `OPENAI_API_KEY` required. |
 | Luna with any other main model | `gpt-6-luna` | Requires `OPENAI_API_KEY` in the Pi process environment; calls the OpenAI Responses API. |
 | Jev | `jev-1.13.0` | Requires `TYPESAFE_API_KEY` in the Pi process environment; calls TypeSafe's System One API. |
-| `provider/model-id` | The named model | Uses Pi's credentials for that provider, including keyless ambient credentials such as AWS profiles, like switching the main model to it. The model must be in Pi's registry. Structured output is not enforced, so the first `{...}` span in the reply is parsed as the decision. |
+| `provider/model-id` | The named model | Uses Pi's credentials for that provider, including keyless ambient credentials such as AWS profiles, like switching the main model to it. The model must be in Pi's registry. Structured output is not enforced, so decision objects are read even inside prose or code fences. If they disagree, you are asked. |
 
 Review uses the main model's **provider**, not its name: an OpenAI API model still uses `OPENAI_API_KEY`. Codex review runs Luna through Pi's provider; it does not invoke Codex's internal auto-reviewer. Missing credentials, unavailable models, invalid responses, and the 20-second reviewer timeout all fall back to a user prompt. Providers are never silently switched.
 

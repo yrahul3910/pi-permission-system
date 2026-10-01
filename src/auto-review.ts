@@ -455,10 +455,20 @@ export async function reviewAutoPermission(
           provider,
         };
 
-      const text = textContent(response.content);
+      const outcomes = new Set<unknown>();
 
-      // Registry models have no enforced output schema; tolerate prose or code fences around the decision object.
-      return parseDecision(JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] ?? text), provider);
+      // Registry models have no enforced output schema, so read every flat object with an outcome, including inside
+      // prose or code fences. Disagreeing objects ask the user, so an example object cannot decide the review.
+      for (const candidate of textContent(response.content).match(/\{[^{}]*\}/g) ?? []) {
+        try {
+          const record = toRecord(JSON.parse(candidate));
+          if (Object.hasOwn(record, "outcome")) outcomes.add(record.outcome);
+        } catch {
+          // Braces in prose are not JSON and carry no decision.
+        }
+      }
+
+      return parseDecision({ outcome: outcomes.size === 1 ? [...outcomes][0] : undefined }, provider);
     }
     const key =
       env[

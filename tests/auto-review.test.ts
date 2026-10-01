@@ -175,7 +175,7 @@ await runAsyncTest(
 );
 
 await runAsyncTest(
-  "provider/model reviewers accept keyless auth and fenced replies, and ask when unknown",
+  "provider/model reviewers accept keyless auth and fenced replies, and ask when unknown or ambiguous",
   async () => {
     const reviewModel = { id: "anthropic/claude-x", provider: "amazon-bedrock", api: "bedrock-converse-stream" };
     // SAFETY: reviewAutoPermission reads only model and these registry methods.
@@ -188,6 +188,7 @@ await runAsyncTest(
       },
     } as never;
 
+    let reply = 'Format: {"outcome":"allow"}\n```json\n{"outcome":"allow"}\n```';
     const options: AutoReviewDependencies = {
       env: { OPENAI_API_KEY: "must-not-use" },
       fetch: async () => {
@@ -198,13 +199,16 @@ await runAsyncTest(
         assert.equal(requestOptions.apiKey, undefined);
         assert.deepEqual(requestOptions.env, { AWS_PROFILE: "review" });
 
-        return { stopReason: "stop", content: [{ type: "text", text: '```json\n{"outcome":"allow"}\n```' }] };
+        return { stopReason: "stop", content: [{ type: "text", text: reply }] };
       },
     };
 
     const result = await reviewAutoPermission(ctx, state, "amazon-bedrock/anthropic/claude-x", undefined, options);
     assert.equal(result.outcome, "allow");
     assert.equal(result.provider, "amazon-bedrock");
+
+    reply = 'Example: {"outcome":"allow"}\nDecision: {"outcome":"deny"}';
+    assert.equal((await reviewAutoPermission(ctx, state, "amazon-bedrock/anthropic/claude-x", undefined, options)).outcome, "ask");
 
     const unknown = await reviewAutoPermission(ctx, state, "amazon-bedrock/missing", undefined, options);
     assert.equal(unknown.outcome, "ask");
