@@ -325,7 +325,7 @@ All settings are optional. Missing keys use the defaults below; permission rules
 | `enabled` | `true` | Master switch. When `false`, the extension skips all registrations and startup work (permission hooks, commands, runtime API, forwarding). |
 | `debug` | `false` | Enables verbose diagnostics and permission review entries in `logs/pi-permission-system-debug.jsonl` |
 | `permissionMode` | `"ask"` | Startup mode: `ask`, `auto`, or `yolo`. Runtime mode changes are session-local and are not saved. |
-| `autoReviewer` | `"luna"` | Auto reviewer: `luna` or `jev`. Saved by the settings modal. See authentication below. |
+| `autoReviewer` | `"luna"` | Auto reviewer: `luna`, `jev`, or a `provider/model-id` from Pi's model registry. Saved by the settings modal. See authentication below. |
 | `yoloMode` | `false` | Legacy startup default for yolo mode in new sessions. Runtime toggles (settings modal or runtime API) are session-scoped: they are never written back to this file and never propagate to other running sessions |
 | `yoloBypassProtectedPaths` | `false` | With YOLO on, bypass the protected-path guard for file tools, bash, and background commands. Explicit denies remain enforced. |
 | `desktopNotifications` | `true` | Sends a native desktop notification when a permission prompt is waiting and this terminal tab is not focused |
@@ -387,7 +387,7 @@ errs on the side of notifying.
 
 ### Auto Permission Mode
 
-Use `/permissions auto` to enable automatic review for the current session. Use `/permissions ask` for manual approval or `/permissions yolo` for YOLO. `/permission-system` offers the same **Permission mode** selector and an **Auto-mode reviewer** selector. The status indicator shows `auto (luna)` or `auto (jev)`.
+Use `/permissions auto` to enable automatic review for the current session. Use `/permissions ask` for manual approval or `/permissions yolo` for YOLO. `/permission-system` offers the same **Permission mode** selector and an **Auto-mode reviewer** selector. The status indicator shows the reviewer, such as `auto (luna)` or `auto (anthropic/claude-sonnet-5-5)`.
 
 To start new sessions in auto mode, add these top-level settings to `~/.pi/agent/pi-permissions.jsonc`:
 
@@ -399,13 +399,14 @@ To start new sessions in auto mode, add these top-level settings to `~/.pi/agent
 }
 ```
 
-`autoReviewer` defaults to `luna`. Set it to `jev` to use Jev. Legacy `yoloMode: true` takes precedence over `permissionMode`; set it to `false` when switching a startup configuration to auto.
+`autoReviewer` defaults to `luna`. Set it to `jev` to use Jev, or to any `provider/model-id` Pi knows, such as `anthropic/claude-sonnet-5-5`, to review with that model. The settings modal cycles between `luna`, `jev`, and the model set in the file. Legacy `yoloMode: true` takes precedence over `permissionMode`; set it to `false` when switching a startup configuration to auto.
 
 | Reviewer | Model | Authentication |
 |----------|-------|----------------|
 | Luna with a Codex main model | `gpt-6-luna` | Uses Pi's `openai-codex` provider and its authenticated credentials, including OAuth. No `OPENAI_API_KEY` required. |
 | Luna with any other main model | `gpt-6-luna` | Requires `OPENAI_API_KEY` in the Pi process environment; calls the OpenAI Responses API. |
 | Jev | `jev-1.13.0` | Requires `TYPESAFE_API_KEY` in the Pi process environment; calls TypeSafe's System One API. |
+| `provider/model-id` | The named model | Uses Pi's credentials for that provider, including keyless ambient credentials such as AWS profiles, like switching the main model to it. The model must be in Pi's registry. Structured output is not enforced, so decision objects are read even inside prose or code fences. If they disagree, you are asked. |
 
 Review uses the main model's **provider**, not its name: an OpenAI API model still uses `OPENAI_API_KEY`. Codex review runs Luna through Pi's provider; it does not invoke Codex's internal auto-reviewer. Missing credentials, unavailable models, invalid responses, and the 20-second reviewer timeout all fall back to a user prompt. Providers are never silently switched.
 

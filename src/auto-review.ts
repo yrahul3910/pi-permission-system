@@ -4,7 +4,13 @@ import { randomUUID } from "node:crypto";
 import { toRecord } from "./common.js";
 import { AUTO_REVIEW_POLICY } from "./auto-review-policy.js";
 
-export type AutoReviewer = "luna" | "jev";
+/** A built-in reviewer, or a `provider/model-id` reference resolved through Pi's model registry. */
+export type AutoReviewer = "luna" | "jev" | `${string}/${string}`;
+
+export function isAutoReviewer(value: unknown): value is AutoReviewer {
+  return typeof value === "string" && /^(luna|jev|[^/\s]+\/\S+)$/.test(value);
+}
+
 export const LUNA_MODEL = "gpt-6-luna";
 export const JEV_MODEL = "jev-1.13.0";
 export const AUTO_REVIEW_TIMEOUT_MS = 20_000;
@@ -52,7 +58,8 @@ export interface AutoReviewInput {
 export interface AutoReviewResult {
   outcome: "allow" | "ask" | "cancelled";
   reason: string;
-  provider?: "codex" | "openai" | "typesafe";
+  /** `codex`, `openai`, or `typesafe` for built-in reviewers; the Pi provider name for model references. */
+  provider?: string;
 }
 
 function textContent(content: unknown): string {
@@ -306,7 +313,7 @@ function parseDecision(
       };
 }
 
-type CodexComplete = (
+type CompleteModel = (
   model: Model<Api>,
   context: Record<string, unknown>,
   options: Record<string, unknown>,
@@ -315,7 +322,7 @@ type CodexComplete = (
 /** Exported dependency boundary for tests; production calls Pi's authenticated provider. */
 export interface AutoReviewDependencies {
   fetch?: typeof fetch;
-  completeCodex?: CodexComplete;
+  completeModel?: CompleteModel;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
 }
@@ -353,44 +360,69 @@ export async function reviewAutoPermission(
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let abortListener: (() => void) | undefined;
   const env = dependencies.env ?? process.env;
-  const provider =
-    reviewer === "jev"
+  const isModelReference = reviewer !== "luna" && reviewer !== "jev";
+  const provider = isModelReference
+    ? reviewer.slice(0, reviewer.indexOf("/"))
+    : reviewer === "jev"
       ? "typesafe"
       : isCodexModel(ctx.model)
         ? "codex"
         : "openai";
   const run = async (): Promise<AutoReviewResult> => {
-    if (provider === "codex") {
-      const main = ctx.model as Model<Api>;
+    if (isModelReference || provider === "codex") {
+      // SAFETY: every member is optional and checked before use, covering registry shapes across Pi versions.
       const registry = ctx.modelRegistry as {
         find?: (provider: string, id: string) => Model<Api> | undefined;
         getApiKeyAndHeaders?: (
           model: Model<Api>,
-        ) => Promise<{ apiKey?: string; headers?: Record<string, string> }>;
+        ) => Promise<{
+          ok?: boolean;
+          apiKey?: string;
+          headers?: Record<string, string>;
+          env?: Record<string, string>;
+        }>;
         getApiKey?: (model: Model<Api>) => Promise<string | undefined>;
       };
-      // Older Pi catalogs predate Luna. Reuse the current Codex transport, never the acting model ID.
-      const model = registry?.find?.(main.provider, LUNA_MODEL) ?? {
-        ...main,
-        id: LUNA_MODEL,
-        name: "GPT-6 Luna",
-        reasoning: true,
-        thinkingLevelMap: undefined,
-      };
+      let model: Model<Api>;
+
+      if (isModelReference) {
+        const found = registry?.find?.(provider, reviewer.slice(provider.length + 1));
+        if (!found) return { outcome: "ask", reason: `Pi does not know the auto-review model ${reviewer}.`, provider };
+
+        model = found;
+      } else {
+        // SAFETY: isCodexModel(ctx.model) selected this branch, so ctx.model is a Pi model record.
+        const main = ctx.model as Model<Api>;
+
+        // Older Pi catalogs predate Luna. Reuse the current Codex transport, never the acting model ID.
+        model = registry?.find?.(main.provider, LUNA_MODEL) ?? {
+          ...main,
+          id: LUNA_MODEL,
+          name: "GPT-6 Luna",
+          reasoning: true,
+          thinkingLevelMap: undefined,
+        };
+      }
+
       const auth = registry?.getApiKeyAndHeaders
         ? await registry.getApiKeyAndHeaders(model)
         : { apiKey: await registry?.getApiKey?.(model) };
-      if (!auth.apiKey)
+
+      // Ambient credentials such as AWS profiles resolve with ok and no apiKey; older Pi results have no ok field.
+      if (!(auth.ok ?? Boolean(auth.apiKey)))
         return {
           outcome: "ask",
-          reason: "Codex credentials are unavailable for Luna review.",
+          reason: isModelReference
+            ? `Pi has no credentials for the auto-review model ${reviewer}.`
+            : "Codex credentials are unavailable for Luna review.",
           provider,
         };
       if (controller.signal.aborted) throw new Error("cancelled");
+      // SAFETY: the context and options below match completeSimple's Context and SimpleStreamOptions.
       const complete =
-        dependencies.completeCodex ??
+        dependencies.completeModel ??
         ((await import("@earendil-works/pi-ai"))
-          .completeSimple as CodexComplete);
+          .completeSimple as CompleteModel);
       const response = toRecord(
         await complete(
           model,
@@ -407,6 +439,7 @@ export async function reviewAutoPermission(
           {
             apiKey: auth.apiKey,
             headers: auth.headers,
+            env: auth.env,
             reasoning: "low",
             maxTokens: 2048,
             signal: controller.signal,
@@ -418,10 +451,24 @@ export async function reviewAutoPermission(
       if (response.stopReason !== "stop")
         return {
           outcome: "ask",
-          reason: "Codex review did not complete successfully.",
+          reason: "Auto review did not complete successfully.",
           provider,
         };
-      return parseDecision(JSON.parse(textContent(response.content)), provider);
+
+      const outcomes = new Set<unknown>();
+
+      // Registry models have no enforced output schema, so read every flat object with an outcome, including inside
+      // prose or code fences. Disagreeing objects ask the user, so an example object cannot decide the review.
+      for (const candidate of textContent(response.content).match(/\{[^{}]*\}/g) ?? []) {
+        try {
+          const record = toRecord(JSON.parse(candidate));
+          if (Object.hasOwn(record, "outcome")) outcomes.add(record.outcome);
+        } catch {
+          // Braces in prose are not JSON and carry no decision.
+        }
+      }
+
+      return parseDecision({ outcome: outcomes.size === 1 ? [...outcomes][0] : undefined }, provider);
     }
     const key =
       env[

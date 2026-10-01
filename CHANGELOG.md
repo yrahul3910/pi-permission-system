@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `autoReviewer` accepts a `provider/model-id` reference, such as `anthropic/claude-sonnet-5-5`, to run auto review on any model in Pi's registry with Pi's credentials for that provider. Unknown models and missing credentials ask the user.
 - Added session-local `/permissions ask|auto|yolo` and an Auto mode in the settings modal. Auto reviews policy asks with Luna (default) or Jev and opens the normal approval dialog on reviewer denial or failure. Luna uses the main model's Codex provider credentials when applicable, otherwise `OPENAI_API_KEY`; Jev uses `TYPESAFE_API_KEY`.
 - Forward subagent auto reviews to the parent's mode, reviewer, and credentials while retaining child worktree context. Reviews are bounded, cancellable, and never persist automatic approvals.
 - Added `yoloBypassProtectedPaths` (default `false`) to the global permission file and the settings modal. With this option and YOLO enabled, built-in and configured protected paths can be accessed through file tools, `bash`, and `bg_start`; explicit policy denies still apply.

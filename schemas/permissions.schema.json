@@ -185,9 +185,9 @@
     },
     "autoReviewer": {
       "type": "string",
-      "enum": ["luna", "jev"],
+      "pattern": "^(luna|jev|[^/\\s]+/\\S+)$",
       "default": "luna",
-      "description": "Auto reviewer. Luna uses the main model's Codex authentication when applicable, otherwise OPENAI_API_KEY. Jev uses TYPESAFE_API_KEY. Denials and failures ask the user."
+      "description": "Auto reviewer: luna, jev, or a provider/model-id reference from Pi's model registry. Luna uses the main model's Codex authentication when applicable, otherwise OPENAI_API_KEY. Jev uses TYPESAFE_API_KEY. A provider/model reviewer uses Pi's credentials for that provider. Denials and failures ask the user."
     }
   },
   "$defs": {

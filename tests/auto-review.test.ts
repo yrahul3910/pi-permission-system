@@ -6,6 +6,7 @@ import {
   MAX_REVIEW_INPUT_CHARS,
   reviewAutoPermission,
   LUNA_MODEL,
+  type AutoReviewDependencies,
   type AutoReviewInput,
 } from "../src/auto-review.js";
 import { normalizePermissionSystemConfig } from "../src/extension-config.js";
@@ -52,6 +53,11 @@ runTest("auto defaults to Luna and preserves legacy YOLO configuration", () => {
     }).yoloMode,
     false,
   );
+  assert.equal(
+    normalizePermissionSystemConfig({ autoReviewer: "openrouter/anthropic/claude-x" }).autoReviewer,
+    "openrouter/anthropic/claude-x",
+  );
+  assert.equal(normalizePermissionSystemConfig({ autoReviewer: "claude-x" }).autoReviewer, "luna");
 });
 
 await runAsyncTest(
@@ -131,7 +137,7 @@ await runAsyncTest(
       fetch: async () => {
         throw new Error("Wrong route");
       },
-      completeCodex: async (model, context, options) => {
+      completeModel: async (model, context, options) => {
         assert.equal(model.id, LUNA_MODEL);
         assert.equal(model.api, "openai-codex-responses");
         assert.equal(options.apiKey, "codex-test");
@@ -165,6 +171,48 @@ await runAsyncTest(
     });
     assert.equal(result.outcome, "ask");
     assert.match(result.reason, /Codex credentials/);
+  },
+);
+
+await runAsyncTest(
+  "provider/model reviewers accept keyless auth and fenced replies, and ask when unknown or ambiguous",
+  async () => {
+    const reviewModel = { id: "anthropic/claude-x", provider: "amazon-bedrock", api: "bedrock-converse-stream" };
+    // SAFETY: reviewAutoPermission reads only model and these registry methods.
+    const ctx = {
+      model: { provider: "openai-codex", api: "openai-codex-responses" },
+      modelRegistry: {
+        find: (provider: string, id: string) =>
+          provider === reviewModel.provider && id === reviewModel.id ? reviewModel : undefined,
+        getApiKeyAndHeaders: async () => ({ ok: true, env: { AWS_PROFILE: "review" } }),
+      },
+    } as never;
+
+    let reply = 'Format: {"outcome":"allow"}\n```json\n{"outcome":"allow"}\n```';
+    const options: AutoReviewDependencies = {
+      env: { OPENAI_API_KEY: "must-not-use" },
+      fetch: async () => {
+        throw new Error("Wrong route");
+      },
+      completeModel: async (model, _context, requestOptions) => {
+        assert.equal(model, reviewModel);
+        assert.equal(requestOptions.apiKey, undefined);
+        assert.deepEqual(requestOptions.env, { AWS_PROFILE: "review" });
+
+        return { stopReason: "stop", content: [{ type: "text", text: reply }] };
+      },
+    };
+
+    const result = await reviewAutoPermission(ctx, state, "amazon-bedrock/anthropic/claude-x", undefined, options);
+    assert.equal(result.outcome, "allow");
+    assert.equal(result.provider, "amazon-bedrock");
+
+    reply = 'Example: {"outcome":"allow"}\nDecision: {"outcome":"deny"}';
+    assert.equal((await reviewAutoPermission(ctx, state, "amazon-bedrock/anthropic/claude-x", undefined, options)).outcome, "ask");
+
+    const unknown = await reviewAutoPermission(ctx, state, "amazon-bedrock/missing", undefined, options);
+    assert.equal(unknown.outcome, "ask");
+    assert.match(unknown.reason, /does not know the auto-review model amazon-bedrock\/missing/);
   },
 );
 
@@ -444,7 +492,7 @@ await runAsyncTest(
       undefined,
     ]) {
       const result = await reviewAutoPermission(ctx, state, "luna", undefined, {
-        completeCodex: async () => ({
+        completeModel: async () => ({
           stopReason: "stop",
           content: [
             {
@@ -605,7 +653,7 @@ await runAsyncTest(
                   : openAIResponse("allow"),
               );
             },
-            completeCodex: async (_model, context) => {
+            completeModel: async (_model, context) => {
               calls++;
               assert.match(JSON.stringify(context), /omitted_tool_history/);
 

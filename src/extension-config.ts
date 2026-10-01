@@ -17,6 +17,7 @@ import { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { applyEdits, modify, parseTree } from "jsonc-parser";
 
+import { isAutoReviewer, type AutoReviewer } from "./auto-review.js";
 import { toRecord } from "./common.js";
 import {
   formatJsoncConfigLoadWarning,
@@ -34,7 +35,7 @@ export interface PermissionSystemExtensionConfig {
   yoloMode: boolean;
   /** Session mode; optional for compatibility with callers using the legacy yoloMode field. */
   permissionMode?: PermissionMode;
-  autoReviewer?: "luna" | "jev";
+  autoReviewer?: AutoReviewer;
   /** Allow YOLO to skip protected-path checks; explicit policy denies still apply. */
   yoloBypassProtectedPaths: boolean;
   desktopNotifications: boolean;
@@ -139,7 +140,7 @@ export function normalizePermissionSystemConfig(
     debug: record.debug === true,
     yoloMode: permissionMode === "yolo",
     permissionMode,
-    autoReviewer: record.autoReviewer === "jev" ? "jev" : "luna",
+    autoReviewer: isAutoReviewer(record.autoReviewer) ? record.autoReviewer : "luna",
     yoloBypassProtectedPaths: record.yoloBypassProtectedPaths === true,
     // Defaults to enabled; only an explicit `false` turns it off.
     desktopNotifications: record.desktopNotifications !== false,
