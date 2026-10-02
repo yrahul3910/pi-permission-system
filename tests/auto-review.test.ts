@@ -207,8 +207,35 @@ await runAsyncTest(
     assert.equal(result.outcome, "allow");
     assert.equal(result.provider, "amazon-bedrock");
 
-    reply = 'Example: {"outcome":"allow"}\nDecision: {"outcome":"deny"}';
-    assert.equal((await reviewAutoPermission(ctx, state, "amazon-bedrock/anthropic/claude-x", undefined, options)).outcome, "ask");
+    for (const [text, expected] of [
+      ['Example: {"outcome":"allow"}\nDecision: {"outcome":"deny"}', "ask"],
+      [
+        'Example: {"outcome":"allow"}\nActual: {"outcome":"deny","reason":"Do not use {force}"}',
+        "ask",
+      ],
+      ['{"outcome":"deny","details":{"outcome":"allow"}}', "ask"],
+      ['{"details":{"outcome":"allow"}}', "ask"],
+      ['{"outcome":"allow"}\n{"outcome":"deny"', "ask"],
+      ['{"outcome":"allow"}\n{"outcome":"deny",}', "ask"],
+      ['{"outcome":"allow","details":{"outcome":"deny"}}', "allow"],
+      [
+        JSON.stringify({
+          outcome: "allow",
+          reason: 'Use "{force}" with C:\\tmp\\',
+        }),
+        "allow",
+      ],
+    ] as const) {
+      reply = text;
+      const decision = await reviewAutoPermission(
+        ctx,
+        state,
+        "amazon-bedrock/anthropic/claude-x",
+        undefined,
+        options,
+      );
+      assert.equal(decision.outcome, expected, text);
+    }
 
     const unknown = await reviewAutoPermission(ctx, state, "amazon-bedrock/missing", undefined, options);
     assert.equal(unknown.outcome, "ask");

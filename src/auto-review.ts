@@ -313,6 +313,61 @@ function parseDecision(
       };
 }
 
+/**
+ * Read complete outer decision objects from model prose or code fences.
+ *
+ * Malformed, unfinished, or conflicting objects require user approval.
+ */
+function parseModelDecision(
+  text: string,
+  provider: AutoReviewResult["provider"],
+): AutoReviewResult {
+  const outcomes = new Set<unknown>();
+  let depth = 0;
+  let start = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+
+      continue;
+    }
+
+    if (character === '"' && depth > 0) {
+      inString = true;
+      continue;
+    }
+
+    if (character === "{") {
+      if (depth === 0) start = index;
+      depth++;
+      continue;
+    }
+
+    if (character !== "}" || depth === 0) continue;
+    depth--;
+    if (depth > 0) continue;
+
+    try {
+      const record = toRecord(JSON.parse(text.slice(start, index + 1)));
+      if (Object.hasOwn(record, "outcome")) outcomes.add(record.outcome);
+    } catch {
+      return parseDecision(undefined, provider);
+    }
+  }
+
+  return parseDecision(
+    { outcome: depth === 0 && outcomes.size === 1 ? [...outcomes][0] : undefined },
+    provider,
+  );
+}
+
 type CompleteModel = (
   model: Model<Api>,
   context: Record<string, unknown>,
@@ -455,20 +510,7 @@ export async function reviewAutoPermission(
           provider,
         };
 
-      const outcomes = new Set<unknown>();
-
-      // Registry models have no enforced output schema, so read every flat object with an outcome, including inside
-      // prose or code fences. Disagreeing objects ask the user, so an example object cannot decide the review.
-      for (const candidate of textContent(response.content).match(/\{[^{}]*\}/g) ?? []) {
-        try {
-          const record = toRecord(JSON.parse(candidate));
-          if (Object.hasOwn(record, "outcome")) outcomes.add(record.outcome);
-        } catch {
-          // Braces in prose are not JSON and carry no decision.
-        }
-      }
-
-      return parseDecision({ outcome: outcomes.size === 1 ? [...outcomes][0] : undefined }, provider);
+      return parseModelDecision(textContent(response.content), provider);
     }
     const key =
       env[
