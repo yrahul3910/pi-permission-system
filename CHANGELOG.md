@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0+upstream.0.8.0] - 2026-10-01
+
+This fork release is based on upstream 0.8.0. The version before `+` tracks fork releases; `upstream.0.8.0` identifies the upstream base and does not affect SemVer precedence.
+
+### Breaking changes
+
+- Move settings from the extension-local `config.json` into `~/.pi/agent/pi-permissions.jsonc` before upgrading. The extension no longer reads the old file and does not migrate it; missing settings use defaults.
+- Protected file paths now deny rather than prompt. YOLO bypasses the shared protected-path guard only when `yoloBypassProtectedPaths` is also enabled; explicit policy denies still apply.
+
 ### Added
 - `autoReviewer` accepts a `provider/model-id` reference, such as `anthropic/claude-sonnet-5-5`, to run auto review on any model in Pi's registry with Pi's credentials for that provider. Unknown models and missing credentials ask the user.
 - Added session-local `/permissions ask|auto|yolo` and an Auto mode in the settings modal. Auto reviews policy asks with Luna (default) or Jev and opens the normal approval dialog on reviewer denial or failure. Luna uses the main model's Codex provider credentials when applicable, otherwise `OPENAI_API_KEY`; Jev uses `TYPESAFE_API_KEY`.
@@ -16,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enforced bash and tool permissions for `bg_start`, including the effective tool default, protected paths, shell syntax, and output redirections. A safe bash command does not bypass a background-tool `ask` or `deny`. ([b22a590](https://github.com/yrahul3910/pi-permission-system/commit/b22a590), September 4–5)
 
 ### Changed
+- Expanded Pi peer dependency compatibility to include `^0.99.0`, retaining the existing ranges. Verified direct and concurrent codemode permission checks through Pi 0.99.2 RPC.
+- Documented codemode configuration and Git installation for this fork, which is not published to npm.
 - Apply the shared protected-path list to `read`, `write`, `edit`, `find`, `grep`, and `ls`, including implicit search/list directories and recognized skill reads. Protected paths now deny instead of taking the special `.env` approval path. Ordinary file policy rules are evaluated when protected-path bypass is enabled, closing the `.env` path that previously skipped those rules after approval.
 - Revised denial messages to remove the "Hard stop" label and instructions to report every block to the user; policy enforcement is unchanged. ([cecd6e4](https://github.com/yrahul3910/pi-permission-system/commit/cecd6e4552b4b38f161ef59fb5c23bd2553b81e4), August 6)
 - Expanded the README with a worked `registryOverrides` example, all four policy layers, and a table of contents. ([3818a94](https://github.com/yrahul3910/pi-permission-system/commit/3818a94), August 19)

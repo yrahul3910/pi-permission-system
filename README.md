@@ -2,26 +2,28 @@
 
 ## Important: read this
 
-This is a fork of the pi-permission-system extension available on npm.
+This is a fork of the pi-permission-system extension available on npm. This fork is distributed through Git, not npm; the npm package installs upstream.
+
+Current release: **0.9.0+upstream.0.8.0**, based on upstream **0.8.0**. The version before `+` tracks this fork's releases; the build metadata identifies the upstream base.
 
 ### Fork changes
 
-The fork adds shell analysis, protected-path checks, and background-command enforcement, alongside permission UI and configuration changes. The dates below distinguish earlier work from the current Unreleased changes; see [CHANGELOG.md](CHANGELOG.md) for release notes.
+The fork adds shell analysis, protected-path checks, and background-command enforcement, alongside permission UI and configuration changes. The dates below distinguish earlier work from the changes in 0.9.0; see [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 | Introduced | Differences from upstream |
 |---|---|
-| May 21, 2026 | Initial per-command pipeline checks, later replaced by the July shell parser. A special approval path for file-tool paths ending in `.env`, replaced by shared protected-path enforcement in Unreleased. |
+| May 21, 2026 | Initial per-command pipeline checks, later replaced by the July shell parser. A special approval path for file-tool paths ending in `.env`, replaced by shared protected-path enforcement in 0.9.0. |
 | June 13–July 10, 2026 | Node.js 24 requirement, completed tsx test migration, artifact-validation fixes, CI, desktop notifications with terminal/tmux focus tracking, and formatting configuration. |
 | July 22, 2026 | Grammar-based shell decomposition, normalized argument-prefix rules, protected paths, an argument-aware safe-command registry, write-redirection checks, configurable shell-syntax policy, and eligible per-command-family session approvals. Runtime YOLO toggles stopped syncing between separate Pi processes. Added working/thinking-time displays and automated code review. |
-| August–September 2026, Unreleased | Revised denial messages, expanded policy documentation, terminal-sized permission dialogs, in-process subagent forwarding, auto-reviewing using an LLM or Jev, `bg_start` command/directory enforcement, and the session-only `/yolo` command. |
+| August-September 2026, released in 0.9.0 | Revised denial messages, expanded policy documentation, terminal-sized permission dialogs, in-process subagent forwarding, auto-reviewing using an LLM or Jev, `bg_start` command/directory enforcement, and the session-only `/yolo` command. |
 
 The shell checks evaluate each command and redirection separately and take the most restrictive result. Protected-path denies outrank allow rules; YOLO bypasses that guard only when `yoloBypassProtectedPaths` is enabled. A safe-command registry decline can still fall through to an `allow` bash default, and static shell analysis does not sandbox the files a program can access. See [Bash Defaults](#bash-defaults) and [Threat Model](#threat-model).
 
-Current Unreleased changes:
+Changes in 0.9.0+upstream.0.8.0:
 
 - Added `yoloBypassProtectedPaths` (default `false`). Protected file paths now deny like bash; enabling this option with YOLO bypasses the shared protected-path guard for both. Explicit policy denies still apply.
 
-- Removed the extension-local `config.json`. Settings and global permission rules now share `~/.pi/agent/pi-permissions.jsonc`. There is no migration or fallback to the removed file. Missing settings use defaults.
+- **Upgrade action required:** move settings from the extension-local `config.json` into `~/.pi/agent/pi-permissions.jsonc`, alongside your global permission rules. The old file is no longer read. There is no migration or fallback; missing settings use defaults.
 - Added **Subagent prompt timeout** to `/permission-system`. The default is **600 seconds (10 minutes)**. Set `"forwardedPromptTimeoutSeconds": null` in the global permission file, or choose **off** in the modal, for no limit.
 - Removed the separate hardcoded forwarding deadline. The configured timeout covers the whole request, including time waiting for display. Each request keeps the deadline selected at creation, and the prompt shows its remaining time. No-limit requests wait until answered.
 - Fixed in-process subagents resetting the parent's YOLO state or replacing its runtime API. The parent auto-approves forwarded `ask` requests while YOLO is on. YOLO does not override a `deny` returned by policy evaluation; see the file-tool exceptions below. YOLO toggles remain session-local.
@@ -47,8 +49,6 @@ The remaining sections document this fork's current behavior.
 
 Permission enforcement extension for the Pi coding agent that provides centralized, deterministic permission gates for tool, bash, MCP, skill, and special operations.
 
-<img width="1360" height="752" alt="image" src="https://github.com/user-attachments/assets/3e85190a-17fa-4d94-ac8e-efa54337df5d" />
-
 ## Table of Contents
 
 - [Important: read this](#important-read-this)
@@ -62,7 +62,7 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
   - [Practical takeaway](#practical-takeaway)
 - [Features](#features)
 - [Installation](#installation)
-  - [npm package](#npm-package)
+  - [Git package](#git-package)
   - [Local extension folder](#local-extension-folder)
 - [Usage](#usage)
   - [Quick Start](#quick-start)
@@ -73,6 +73,7 @@ Permission enforcement extension for the Pi coding agent that provides centraliz
   - [Desktop Notifications](#desktop-notifications)
   - [Auto Permission Mode](#auto-permission-mode)
   - [Runtime YOLO Control](#runtime-yolo-control)
+  - [Code mode](#code-mode)
   - [Global Policy File](#global-policy-file)
   - [Global Per-Agent Overrides](#global-per-agent-overrides)
   - [Project-Level Policy Files](#project-level-policy-files)
@@ -215,11 +216,15 @@ If you are coming from OpenCode, you usually do **not** need to rewrite your who
 
 ## Installation
 
-### npm package
+### Git package
+
+Install this fork from Git:
 
 ```bash
-pi install npm:pi-permission-system
+pi install git:github.com/yrahul3910/pi-permission-system
 ```
+
+The npm package `pi-permission-system` is upstream, not this fork.
 
 ### Local extension folder
 
@@ -345,45 +350,25 @@ Permission prompts identify `bg_start`, the command, and its working directory, 
 
 ### Desktop Notifications
 
-When a tool call needs approval, the extension can pop a native desktop
-notification so you are not left waiting on a tab you are not looking at.
-Toggle it from the `/permission-system` settings modal or the `desktopNotifications`
-config key.
+When a tool call needs approval, the extension can pop a native desktop notification so you are not left waiting on a tab you are not looking at. Toggle it from the `/permission-system` settings modal or the `desktopNotifications` config key.
 
-Notifications are delivered with the platform-native notifier and therefore do
-not depend on your terminal or multiplexer:
+Notifications are delivered with the platform-native notifier and therefore do not depend on your terminal or multiplexer:
 
 - **macOS** — [`terminal-notifier`](https://github.com/julienXX/terminal-notifier) if installed (recommended), otherwise `osascript` (Notification Center)
 - **Linux/BSD** — `notify-send` (install `libnotify` if missing)
 - **Windows** — PowerShell toast notification
 
-> **Recommended on macOS: install `terminal-notifier`** (`brew install terminal-notifier`).
-> When present, the extension uses it automatically. It is preferred over the
-> `osascript` fallback because `osascript` posts notifications as "Script Editor":
-> clicking one launches Script Editor's open-file dialog, and Script Editor must
-> be granted notification permission in **System Settings → Notifications** or the
-> notification is silently dropped. `terminal-notifier` has its own notification
-> identity, and clicking a notification reactivates your terminal (e.g. Ghostty)
-> instead of opening a file dialog.
+> **Recommended on macOS: install `terminal-notifier`** (`brew install terminal-notifier`). When present, the extension uses it automatically. It is preferred over the `osascript` fallback because `osascript` posts notifications as "Script Editor": clicking one launches Script Editor's open-file dialog, and Script Editor must be granted notification permission in **System Settings → Notifications** or the notification is silently dropped. `terminal-notifier` has its own notification identity, and clicking a notification reactivates your terminal (e.g. Ghostty) instead of opening a file dialog.
 
-**Focus detection.** To avoid notifying you when you *are* looking at the tab,
-the extension enables terminal focus reporting (DEC private mode `1004`) and
-watches for focus-in/out events. It only suppresses a notification once it has
-positively observed that the tab is focused; if focus events never arrive, it
-errs on the side of notifying.
+**Focus detection.** To avoid notifying you when you *are* looking at the tab, the extension enables terminal focus reporting (DEC private mode `1004`) and watches for focus-in/out events. It only suppresses a notification once it has positively observed that the tab is focused; if focus events never arrive, it errs on the side of notifying.
 
-> **tmux users (e.g. tmux inside Ghostty):** tmux only forwards focus events to
-> pi when focus reporting is enabled in your tmux config. Add this to
-> `~/.tmux.conf`:
+> **tmux users (e.g. tmux inside Ghostty):** tmux only forwards focus events to pi when focus reporting is enabled in your tmux config. Add this to `~/.tmux.conf`:
 >
 > ```tmux
 > set -g focus-events on
 > ```
 >
-> Ghostty supports focus reporting natively, so with that option set the full
-> chain (Ghostty -> tmux -> pi) works and off-tab detection is accurate. Without
-> it, tmux swallows the focus events and the extension will notify on every
-> waiting prompt regardless of which pane/window is active.
+> Ghostty supports focus reporting natively, so with that option set the full chain (Ghostty -> tmux -> pi) works and off-tab detection is accurate. Without it, tmux swallows the focus events and the extension will notify on every waiting prompt regardless of which pane/window is active.
 
 ### Auto Permission Mode
 
@@ -456,6 +441,22 @@ pi.registerShortcut("f8", {
 ```
 
 The runtime API exposes `getYoloMode()`, `setYoloMode(enabled, options?)`, and `toggleYoloMode(options?)`. The shared global API controls its registered owner, ordinarily the interactive parent; it is not a per-caller API for arbitrary in-process children. Runtime updates change that owner's in-memory YOLO state and are never saved. Each newly loaded extension instance takes its startup YOLO value from `pi-permissions.jsonc`; lifecycle refreshes preserve its current toggle.
+
+### Code mode
+
+Pi 0.99.0 introduced code mode, which lets models orchestrate tool calls with JavaScript. Pi exposes each nested tool call to permission extensions with its actual arguments, so the usual checks still apply. Add `codemode` to your existing `tools` section to skip the outer script approval:
+
+```json
+{
+  "tools": {
+    "codemode": "allow"
+  }
+}
+```
+
+This permits the script to run, not every tool it calls. Nested calls still follow their own allow, ask, and deny rules. Without an allow rule, the outer call also prompts when its effective tool policy is `ask`.
+
+Native MCP tools named `mcp__<server>__<tool>` use `tools` rules, not the dedicated `mcp` section, which applies only to the registered `mcp` proxy tool. Codemode's `models.classify()` helper is not a tool call and does not receive a separate permission check.
 
 ### Global Policy File
 
